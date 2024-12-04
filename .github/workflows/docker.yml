@@ -2,8 +2,6 @@ name: Create and publish docker image
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 20 */1 * *"
   push:
     tags:
       - "v*"
@@ -22,7 +20,7 @@ env:
 
 jobs:
   release-docker:
-    runs-on: ubuntu-24.0
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
