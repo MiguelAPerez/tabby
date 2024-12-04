@@ -20,7 +20,7 @@ env:
 
 jobs:
   release-docker:
-    runs-on: ubuntu-24.04-16core
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
