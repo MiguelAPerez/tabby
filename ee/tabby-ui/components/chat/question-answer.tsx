@@ -261,6 +261,8 @@ function AssistantMessageCard(props: AssistantMessageCardProps) {
     onNavigateToContext,
     onApplyInEditor,
     onCopyContent,
+    onLookupSymbol,
+    openInEditor,
     supportsOnApplyInEditorV2
   } = React.useContext(ChatContext)
   const [relevantCodeHighlightIndex, setRelevantCodeHighlightIndex] =
@@ -404,7 +406,10 @@ function AssistantMessageCard(props: AssistantMessageCardProps) {
               onCodeCitationMouseEnter={onCodeCitationMouseEnter}
               onCodeCitationMouseLeave={onCodeCitationMouseLeave}
               canWrapLongLines={!isLoading}
+              onLookupSymbol={onLookupSymbol}
+              openInEditor={openInEditor}
               supportsOnApplyInEditorV2={supportsOnApplyInEditorV2}
+              activeSelection={userMessage.activeContext}
             />
             {!!message.error && <ErrorMessageBlock error={message.error} />}
           </>
