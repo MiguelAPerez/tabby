@@ -136,6 +136,7 @@ export const listSecuredUsers = graphql(/* GraphQL */ `
           createdAt
           active
           name
+          isSsoUser
         }
         cursor
       }
@@ -397,11 +398,13 @@ export const listThreadMessages = graphql(/* GraphQL */ `
         node {
           id
           threadId
+          codeSourceId
           role
           content
           attachment {
             code {
               gitUrl
+              commit
               filepath
               language
               content
@@ -459,5 +462,59 @@ export const listThreadMessages = graphql(/* GraphQL */ `
 export const setThreadPersistedMutation = graphql(/* GraphQL */ `
   mutation SetThreadPersisted($threadId: ID!) {
     setThreadPersisted(threadId: $threadId)
+  }
+`)
+
+export const notificationsQuery = graphql(/* GraphQL */ `
+  query Notifications {
+    notifications {
+      id
+      content
+      read
+      createdAt
+    }
+  }
+`)
+
+export const ldapCredentialQuery = graphql(/* GraphQL */ `
+  query LdapCredential {
+    ldapCredential {
+      host
+      port
+      bindDn
+      baseDn
+      userFilter
+      encryption
+      skipTlsVerify
+      emailAttribute
+      nameAttribute
+      createdAt
+      updatedAt
+    }
+  }
+`)
+
+export const oauthCredential = graphql(/* GraphQL */ `
+  query OAuthCredential($provider: OAuthProvider!) {
+    oauthCredential(provider: $provider) {
+      provider
+      clientId
+      createdAt
+      updatedAt
+    }
+  }
+`)
+
+export const repositorySourceListQuery = graphql(/* GraphQL */ `
+  query RepositorySourceList {
+    repositoryList {
+      id
+      name
+      kind
+      gitUrl
+      sourceId
+      sourceName
+      sourceKind
+    }
   }
 `)

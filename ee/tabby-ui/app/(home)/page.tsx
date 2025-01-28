@@ -7,15 +7,19 @@ import tabbyUrl from '@/assets/logo-dark.png'
 import { useQuery } from 'urql'
 import { useStore } from 'zustand'
 
-import { SESSION_STORAGE_KEY } from '@/lib/constants'
 import { useMe } from '@/lib/hooks/use-me'
 import { useSelectedModel } from '@/lib/hooks/use-models'
+import { useSelectedRepository } from '@/lib/hooks/use-repositories'
 import {
   useIsChatEnabled,
   useIsFetchingServerInfo
 } from '@/lib/hooks/use-server-info'
 import { setThreadsPageNo } from '@/lib/stores/answer-engine-store'
-import { updateSelectedModel } from '@/lib/stores/chat-actions'
+import {
+  updatePendingUserMessage,
+  updateSelectedModel,
+  updateSelectedRepoSourceId
+} from '@/lib/stores/chat-actions'
 import {
   clearHomeScrollPosition,
   setHomeScrollPosition,
@@ -27,6 +31,7 @@ import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ClientOnly } from '@/components/client-only'
 import { BANNER_HEIGHT, useShowDemoBanner } from '@/components/demo-banner'
+import { NotificationBox } from '@/components/notification-box'
 import SlackDialog from '@/components/slack-dialog'
 import TextAreaSearch from '@/components/textarea-search'
 import { ThemeToggle } from '@/components/theme-toggle'
@@ -54,7 +59,8 @@ function MainPanel() {
   })
   const scrollY = useStore(useScrollStore, state => state.homePage)
 
-  const { selectedModel, isModelLoading, models } = useSelectedModel()
+  const { selectedModel, isFetchingModels, models } = useSelectedModel()
+  const { selectedRepository, isFetchingRepositories } = useSelectedRepository()
 
   const showMainSection = !!data?.me || !isFetchingServerInfo
 
@@ -84,13 +90,16 @@ function MainPanel() {
     updateSelectedModel(model)
   }
 
-  const onSearch = (question: string, ctx?: ThreadRunContexts) => {
+  const onSelectedRepo = (sourceId: string | undefined) => {
+    updateSelectedRepoSourceId(sourceId)
+  }
+
+  const onSearch = (question: string, context?: ThreadRunContexts) => {
     setIsLoading(true)
-    sessionStorage.setItem(SESSION_STORAGE_KEY.SEARCH_INITIAL_MSG, question)
-    sessionStorage.setItem(
-      SESSION_STORAGE_KEY.SEARCH_INITIAL_CONTEXTS,
-      JSON.stringify(ctx)
-    )
+    updatePendingUserMessage({
+      content: question,
+      context
+    })
     router.push('/search')
   }
 
@@ -110,6 +119,7 @@ function MainPanel() {
           <ClientOnly>
             <ThemeToggle />
           </ClientOnly>
+          <NotificationBox />
           <UserPanel showHome={false} showSetting>
             <MyAvatar className="h-10 w-10 border" />
           </UserPanel>
@@ -155,8 +165,12 @@ function MainPanel() {
                   contextInfo={contextInfoData?.contextInfo}
                   fetchingContextInfo={fetchingContextInfo}
                   modelName={selectedModel}
-                  onModelSelect={handleSelectModel}
-                  isModelLoading={isModelLoading}
+                  onSelectModel={handleSelectModel}
+                  repoSourceId={selectedRepository?.sourceId}
+                  onSelectRepo={onSelectedRepo}
+                  isInitializingResources={
+                    isFetchingModels || isFetchingRepositories
+                  }
                   models={models}
                 />
               </AnimationWrapper>

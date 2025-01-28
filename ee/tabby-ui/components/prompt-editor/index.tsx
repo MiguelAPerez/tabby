@@ -25,7 +25,7 @@ import type { Content as TiptapContent } from '@tiptap/react'
 import { NEWLINE_CHARACTER } from '@/lib/constants'
 import { ContextInfo, ContextSource } from '@/lib/gql/generates/graphql'
 import { useLatest } from '@/lib/hooks/use-latest'
-import { cn, isCodeSourceContext, isDocSourceContext } from '@/lib/utils'
+import { cn, isDocSourceContext } from '@/lib/utils'
 
 import { MentionExtension } from './mention-extension'
 import suggestion from './suggestion'
@@ -117,14 +117,6 @@ export const PromptEditor = forwardRef<PromptEditorRef, PromptEditorProps>(
       doSubmit.current(editor)
     }
 
-    const hasCodebaseSources = useMemo(() => {
-      if (!contextInfo?.sources) {
-        return false
-      }
-
-      return contextInfo.sources.some(o => isCodeSourceContext(o.sourceKind))
-    }, [contextInfo?.sources])
-
     const hasDocSources = useMemo(() => {
       if (!contextInfo?.sources) {
         return false
@@ -160,20 +152,6 @@ export const PromptEditor = forwardRef<PromptEditorRef, PromptEditorProps>(
               pluginKey: DocumentMentionPluginKey,
               placement: placement === 'bottom' ? 'top-start' : 'bottom-start',
               disabled: !hasDocSources
-            })
-          }),
-          // for codebase mention
-          MentionExtension.configure({
-            deleteTriggerWithBackspace: true,
-            HTMLAttributes: {
-              class: 'mention-code'
-            },
-            suggestion: suggestion({
-              category: 'code',
-              char: '#',
-              pluginKey: CodeMentionPluginKey,
-              placement: placement === 'bottom' ? 'top-start' : 'bottom-start',
-              disabled: !hasCodebaseSources
             })
           })
         ],

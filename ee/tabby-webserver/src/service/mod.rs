@@ -24,6 +24,8 @@ use answer::AnswerService;
 use anyhow::Context;
 use async_trait::async_trait;
 pub use auth::create as new_auth_service;
+#[cfg(test)]
+pub use auth::testutils::FakeAuthService;
 use axum::{
     body::Body,
     http::{HeaderName, HeaderValue, Request, StatusCode},
@@ -131,6 +133,8 @@ impl ServerContext {
             integration.clone(),
             repository.clone(),
             context.clone(),
+            license.clone(),
+            notification.clone(),
             embedding.clone(),
         )
         .await;
@@ -228,7 +232,11 @@ impl WorkerService for ServerContext {
 
         if let Some(user) = user {
             // Apply rate limiting when `user` is not none.
-            if !self.user_rate_limiter.is_allowed(&user).await {
+            if !self
+                .user_rate_limiter
+                .is_allowed(request.uri(), &user)
+                .await
+            {
                 return axum::response::Response::builder()
                     .status(StatusCode::TOO_MANY_REQUESTS)
                     .body(Body::empty())
@@ -455,6 +463,11 @@ impl UserSecuredExt for tabby_schema::auth::UserSecured {
             created_at: val.created_at,
             active: val.active,
             is_password_set: val.password_encrypted.is_some(),
+
+            // when a user created by registration, password_encrypted is set
+            // when a user created by SSO, password_encrypted is not set
+            // so, we can determine if a user is SSO user by checking if password_encrypted is set
+            is_sso_user: val.password_encrypted.is_none(),
         }
     }
 }

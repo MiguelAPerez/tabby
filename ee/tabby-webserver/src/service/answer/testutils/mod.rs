@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use async_openai::{
+use async_openai_alt::{
     error::OpenAIError,
     types::{
         ChatChoice, ChatChoiceStream, ChatCompletionResponseMessage, ChatCompletionResponseStream,
@@ -11,7 +11,10 @@ use async_openai::{
 use axum::async_trait;
 use juniper::ID;
 use tabby_common::api::{
-    code::{CodeSearch, CodeSearchError, CodeSearchParams, CodeSearchQuery, CodeSearchResponse},
+    code::{
+        CodeSearch, CodeSearchDocument, CodeSearchError, CodeSearchHit, CodeSearchParams,
+        CodeSearchQuery, CodeSearchResponse, CodeSearchScores,
+    },
     structured_doc::{
         DocSearch, DocSearchDocument, DocSearchError, DocSearchHit, DocSearchResponse,
         DocSearchWebDocument,
@@ -41,7 +44,7 @@ impl ChatCompletionStream for FakeChatCompletionStream {
         _request: CreateChatCompletionRequest,
     ) -> Result<CreateChatCompletionResponse, OpenAIError> {
         if self.return_error {
-            return Err(OpenAIError::ApiError(async_openai::error::ApiError {
+            return Err(OpenAIError::ApiError(async_openai_alt::error::ApiError {
                 message: "error".to_string(),
                 code: None,
                 param: None,
@@ -66,15 +69,19 @@ impl ChatCompletionStream for FakeChatCompletionStream {
                     ),
                     tool_calls: None,
                     function_call: None,
+                    refusal: None,
                 },
                 finish_reason: Some(FinishReason::Stop),
                 logprobs: None,
             }],
             system_fingerprint: Some("seed".to_owned()),
+            service_tier: None,
             usage: Some(CompletionUsage {
                 prompt_tokens: 1,
                 completion_tokens: 2,
                 total_tokens: 3,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
             }),
         })
     }
@@ -96,11 +103,20 @@ impl ChatCompletionStream for FakeChatCompletionStream {
                         content: Some("This is the first part of the response. ".to_string()),
                         function_call: None,
                         tool_calls: None,
+                        refusal: None,
                     },
                     finish_reason: None,
                     logprobs: None,
                 }],
                 system_fingerprint: Some("seed".to_owned()),
+                service_tier: None,
+                usage: Some(CompletionUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 2,
+                    total_tokens: 3,
+                    prompt_tokens_details: None,
+                    completion_tokens_details: None,
+                }),
             }),
             Ok(CreateChatCompletionStreamResponse {
                 id: "test-stream-response".to_owned(),
@@ -114,11 +130,20 @@ impl ChatCompletionStream for FakeChatCompletionStream {
                         content: Some("This is the second part of the response.".to_string()),
                         function_call: None,
                         tool_calls: None,
+                        refusal: None,
                     },
                     finish_reason: Some(FinishReason::Stop),
                     logprobs: None,
                 }],
                 system_fingerprint: Some("seed".to_owned()),
+                service_tier: None,
+                usage: Some(CompletionUsage {
+                    prompt_tokens: 1,
+                    completion_tokens: 2,
+                    total_tokens: 3,
+                    prompt_tokens_details: None,
+                    completion_tokens_details: None,
+                }),
             }),
         ]);
 
@@ -134,7 +159,44 @@ impl CodeSearch for FakeCodeSearch {
         _query: CodeSearchQuery,
         _params: CodeSearchParams,
     ) -> Result<CodeSearchResponse, CodeSearchError> {
-        Ok(CodeSearchResponse { hits: vec![] })
+        Ok(CodeSearchResponse {
+            hits: vec![
+                CodeSearchHit {
+                    doc: CodeSearchDocument {
+                        filepath: "src/lib.rs".to_string(),
+                        body: "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}".to_string(),
+                        start_line: Some(1),
+                        language: "rust".to_string(),
+                        file_id: "1".to_string(),
+                        chunk_id: "chunk1".to_string(),
+                        git_url: "https://github.com/test/repo".to_string(),
+                        commit: Some("commit".to_string()),
+                    },
+                    scores: CodeSearchScores {
+                        bm25: 0.8,
+                        embedding: 0.9,
+                        rrf: 0.85,
+                    },
+                },
+                CodeSearchHit {
+                    doc: CodeSearchDocument {
+                        filepath: "src/main.rs".to_string(),
+                        body: "fn main() {\n    println!(\"Hello World\");\n}".to_string(),
+                        start_line: Some(1),
+                        language: "rust".to_string(),
+                        file_id: "2".to_string(),
+                        chunk_id: "chunk2".to_string(),
+                        git_url: "https://github.com/test/repo".to_string(),
+                        commit: Some("commit".to_string()),
+                    },
+                    scores: CodeSearchScores {
+                        bm25: 0.7,
+                        embedding: 0.8,
+                        rrf: 0.75,
+                    },
+                },
+            ],
+        })
     }
 }
 

@@ -163,10 +163,13 @@ impl ModelRegistry {
     }
 
     pub fn get_model_info(&self, name: &str) -> &ModelInfo {
-        self.models
-            .iter()
-            .find(|x| x.name == name)
-            .unwrap_or_else(|| panic!("Invalid model_id <{}/{}>", self.name, name))
+        match self.models.iter().find(|x| x.name == name) {
+            Some(model_info) => model_info,
+            None => panic!(
+                "Invalid `model_id` <{}/{}>; please consult https://github.com/{}/registry-tabby for the correct `model_id`.",
+                self.name, name, self.name
+            ),
+        }
     }
 }
 
@@ -197,6 +200,7 @@ mod tests {
         let dir = registry.get_model_dir("StarCoder-1B");
 
         let old_model_path = dir.join(LEGACY_GGML_MODEL_PATH.as_str());
+        let new_model_path = dir.join("ggml").join("model-00001-of-00001.gguf");
         tokio::fs::create_dir_all(old_model_path.parent().unwrap())
             .await
             .unwrap();
@@ -207,11 +211,13 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(!new_model_path.exists());
         registry.migrate_legacy_model_path("StarCoder-1B").unwrap();
         assert!(registry
             .get_model_entry_path("StarCoder-1B")
             .unwrap()
             .exists());
         assert!(!old_model_path.exists());
+        assert!(new_model_path.exists());
     }
 }

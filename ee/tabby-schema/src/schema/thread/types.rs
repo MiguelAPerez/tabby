@@ -7,6 +7,7 @@ use tabby_common::api::{
 };
 use validator::Validate;
 
+use super::MessageAttachmentCodeInput;
 use crate::{interface::UserValue, juniper::relay::NodeType, Context};
 
 #[derive(GraphQLEnum, Serialize, Clone, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub enum Role {
 pub struct Message {
     pub id: ID,
     pub thread_id: ID,
+    pub code_source_id: Option<String>,
     pub role: Role,
     pub content: String,
 
@@ -69,23 +71,37 @@ pub struct MessageAttachmentClientCode {
     pub content: String,
 }
 
+impl From<MessageAttachmentClientCode> for MessageAttachmentCodeInput {
+    fn from(val: MessageAttachmentClientCode) -> Self {
+        MessageAttachmentCodeInput {
+            filepath: val.filepath,
+            start_line: val.start_line,
+            content: val.content,
+        }
+    }
+}
+
 #[derive(GraphQLObject, Clone)]
 pub struct MessageAttachmentCode {
     pub git_url: String,
+    pub commit: Option<String>,
     pub filepath: String,
     pub language: String,
     pub content: String,
-    pub start_line: i32,
+
+    /// When start line is `None`, it represents the entire file.
+    pub start_line: Option<i32>,
 }
 
 impl From<CodeSearchDocument> for MessageAttachmentCode {
     fn from(doc: CodeSearchDocument) -> Self {
         Self {
             git_url: doc.git_url,
+            commit: doc.commit,
             filepath: doc.filepath,
             language: doc.language,
             content: doc.body,
-            start_line: doc.start_line as i32,
+            start_line: doc.start_line.map(|x| x as i32),
         }
     }
 }
@@ -241,6 +257,7 @@ pub struct ThreadAssistantMessageCreated {
 
 #[derive(GraphQLObject)]
 pub struct ThreadAssistantMessageAttachmentsCode {
+    pub code_source_id: String,
     pub hits: Vec<MessageCodeSearchHit>,
 }
 

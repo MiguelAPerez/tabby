@@ -182,6 +182,7 @@ CREATE TABLE thread_messages(
   doc_attachments BLOB,
   created_at TIMESTAMP NOT NULL DEFAULT(DATETIME('now')),
   updated_at TIMESTAMP NOT NULL DEFAULT(DATETIME('now')),
+  code_source_id VARCHAR(255),
   FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
 );
 CREATE TABLE web_documents(
@@ -241,4 +242,22 @@ CREATE TABLE read_notifications(
   CONSTRAINT idx_unique_user_id_notification_id UNIQUE(user_id, notification_id),
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+);
+CREATE TABLE ldap_credential(
+  id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+  host STRING NOT NULL,
+  port INTEGER NOT NULL DEFAULT 389,
+  bind_dn STRING NOT NULL,
+  bind_password STRING NOT NULL,
+  base_dn STRING NOT NULL,
+  user_filter STRING NOT NULL,
+  -- enum of none, starttls, ldaps
+  encryption STRING NOT NULL DEFAULT 'none',
+  skip_tls_verify BOOLEAN NOT NULL DEFAULT FALSE,
+  --- the attribute to be used as the Tabby user email address
+  email_attribute STRING NOT NULL DEFAULT 'email',
+  --- the attribute to be used as the Tabby user name
+  name_attribute STRING,
+  created_at TIMESTAMP NOT NULL DEFAULT(DATETIME('now')),
+  updated_at TIMESTAMP NOT NULL DEFAULT(DATETIME('now'))
 );

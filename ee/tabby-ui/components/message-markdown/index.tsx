@@ -8,8 +8,13 @@ import {
   Maybe,
   MessageAttachmentClientCode
 } from '@/lib/gql/generates/graphql'
-import { AttachmentCodeItem, AttachmentDocItem } from '@/lib/types'
-import { cn } from '@/lib/utils'
+import { AttachmentCodeItem, AttachmentDocItem, FileContext } from '@/lib/types'
+import {
+  cn,
+  convertFilepath,
+  encodeMentionPlaceHolder,
+  resolveFileNameForDisplay
+} from '@/lib/utils'
 import {
   HoverCard,
   HoverCardContent,
@@ -20,7 +25,6 @@ import { MemoizedReactMarkdown } from '@/components/markdown'
 import './style.css'
 
 import {
-  FileContext,
   FileLocation,
   Filepath,
   LookupSymbolHint,
@@ -29,10 +33,12 @@ import {
 
 import {
   MARKDOWN_CITATION_REGEX,
+  MARKDOWN_FILE_REGEX,
   MARKDOWN_SOURCE_REGEX
 } from '@/lib/constants/regex'
 
 import { Mention } from '../mention-tag'
+import { IconFile } from '../ui/icons'
 import { Skeleton } from '../ui/skeleton'
 import { CodeElement } from './code'
 import { DocDetailView } from './doc-detail-view'
@@ -163,6 +169,15 @@ export function MessageMarkdown({
       const className = headline ? 'text-[1rem] font-semibold' : undefined
       return { sourceId, className }
     })
+    processMatches(MARKDOWN_FILE_REGEX, FileTag, (match: string) => {
+      const encodedFilepath = match[1]
+      try {
+        return {
+          encodedFilepath,
+          openInEditor
+        }
+      } catch (e) {}
+    })
 
     addTextNode(text.slice(lastIndex))
 
@@ -175,7 +190,7 @@ export function MessageMarkdown({
 
     setSymbolLocationMap(map => new Map(map.set(keyword, undefined)))
     const hints: LookupSymbolHint[] = []
-    if (activeSelection) {
+    if (activeSelection && activeSelection?.range) {
       // FIXME(@icycodes): this is intended to convert the filepath to Filepath type
       // We should remove this after FileContext.filepath use type Filepath instead of string
       let filepath: Filepath
@@ -205,6 +220,10 @@ export function MessageMarkdown({
     const symbolInfo = await onLookupSymbol(keyword, hints)
     setSymbolLocationMap(map => new Map(map.set(keyword, symbolInfo)))
   }
+
+  const encodedMessage = useMemo(() => {
+    return encodeMentionPlaceHolder(message)
+  }, [message])
 
   return (
     <MessageMarkdownContext.Provider
@@ -276,7 +295,7 @@ export function MessageMarkdown({
           }
         }}
       >
-        {message}
+        {encodedMessage}
       </MemoizedReactMarkdown>
     </MessageMarkdownContext.Provider>
   )
@@ -373,6 +392,58 @@ function SourceTag({
             className={className}
           />
         )}
+      </span>
+    </span>
+  )
+}
+
+function FileTag({
+  encodedFilepath,
+  openInEditor,
+  className
+}: {
+  encodedFilepath: string | undefined
+  className?: string
+  openInEditor?: MessageMarkdownProps['openInEditor']
+}) {
+  const filepath = useMemo(() => {
+    if (!encodedFilepath) return null
+    try {
+      const decodedFilepath = decodeURIComponent(encodedFilepath)
+      const filepath = JSON.parse(decodedFilepath) as Filepath
+      return filepath
+    } catch (e) {
+      return null
+    }
+  }, [encodedFilepath])
+
+  const filepathString = useMemo(() => {
+    if (!filepath) return undefined
+
+    return convertFilepath(filepath).filepath
+  }, [filepath])
+
+  const handleClick = () => {
+    if (!openInEditor || !filepath) return
+    openInEditor({ filepath })
+  }
+
+  if (!filepathString) return null
+
+  return (
+    <span
+      className={cn(
+        'symbol space-x-1 whitespace-nowrap border bg-muted py-0.5 align-middle leading-5',
+        className,
+        {
+          'hover:bg-muted/50 cursor-pointer': !!openInEditor && !!filepath
+        }
+      )}
+      onClick={handleClick}
+    >
+      <IconFile className="relative -top-px inline-block h-3.5 w-3.5" />
+      <span className={cn('whitespace-normal font-medium')}>
+        {resolveFileNameForDisplay(filepathString)}
       </span>
     </span>
   )

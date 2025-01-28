@@ -1,24 +1,31 @@
 # DeepSeek
 
-[DeepSeek](https://www.deepseek.com/) is a platform that offers a suite of AI models. Tabby supports DeepSeek's models for both code completion and chat.
+[DeepSeek](https://www.deepseek.com/) is an AI company that develops large language models specialized in coding and general tasks. Their models include [DeepSeek V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) for general tasks and [DeepSeek Coder](https://huggingface.co/collections/deepseek-ai/deepseekcoder-v2-666bf4b274a5f556827ceeca) specifically optimized for programming tasks.
 
-DeepSeek provides some OpenAI-compatible APIs, allowing us to use the OpenAI chat kinds directly.
-However, for completion, there are some differences in the implementation, so we should use the `deepseek/completion` kind.
+## Chat model
 
-Below is an example
+DeepSeek provides an OpenAI-compatible chat API interface.
 
 ```toml title="~/.tabby/config.toml"
-# Chat model
 [model.chat.http]
 kind = "openai/chat"
 model_name = "your_model"
 api_endpoint = "https://api.deepseek.com/v1"
-api_key = "secret-api-key"
+api_key = "your-api-key"
+```
 
-# Completion model
+## Completion model
+
+DeepSeek offers a specialized completion API interface for code completion tasks.
+
+```toml title="~/.tabby/config.toml"
 [model.completion.http]
 kind = "deepseek/completion"
 model_name = "your_model"
 api_endpoint = "https://api.deepseek.com/beta"
-api_key = "secret-api-key"
+api_key = "your-api-key"
 ```
+
+## Embeddings model
+
+DeepSeek currently does not provide embedding model APIs.

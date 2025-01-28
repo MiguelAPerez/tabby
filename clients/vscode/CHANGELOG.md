@@ -1,3 +1,37 @@
+## 1.18.0
+
+### Features
+
+- **Chat**:
+  - Added support to explicitly select a configured Git repository as the context for chat conversations.
+  - Added support to use the active Notebook editor selection as the context for chat conversations.
+  - Display error messages and suggest actions when failing to load the chat panel.
+  - **Note**: Requires updating the Tabby server to version 0.23.0 or later.
+
+### Fixes & Improvements
+
+- Updated the status bar item to show warning when the server returns an error due to too many requests.
+- Improved the UI for the Tabby command palette and when updating the token.
+
+## 1.16.0
+
+### Features
+
+- **Chat**:
+  - Symbols referenced in the chat response can now be clicked to navigate to their definitions.
+  - **Note**: Requires updating the Tabby server to version 0.21.2, 0.22.0, or later.
+- **Code Completion**:
+  - Now provides inline completion even when the completion widget is open, based on the selected item in the widget.
+  - Automatically adds import statements if needed after accepting a completion that uses a symbol requiring an import.
+
+### Fixes & Improvements
+
+- Streamlined the `Tabby: Connect to Server...` command process and added a server history list for quick selection.
+- **Code Completion**: Added a post-processing filter to fix an issue where some code completions contained an extra space in the indentation for certain code completion models.
+- **Chat**: Improved the feature to automatically use the active selection code as context.
+- **Chat**: Fixed a bug where dragging the chat panel to the right or bottom side of the editor caused it to be blank.
+- The HTTP proxy in VSCode settings is no longer used by default. Added an option to enable it.
+
 ## 1.14.0
 
 ### Features

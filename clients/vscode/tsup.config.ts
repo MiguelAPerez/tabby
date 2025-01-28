@@ -15,14 +15,16 @@ const banner = dedent`
    */`;
 
 export default defineConfig(async (options: Options): Promise<Options[]> => {
-  const tabbyAgentDist = path.join(await getInstalledPath("tabby-agent", { local: true }), "dist");
+  const tabbyAgentDist = path
+    .join(await getInstalledPath("tabby-agent", { local: true }), "dist")
+    .replaceAll(path.sep, path.posix.sep);
   const copyTabbyAgentTask: Options = {
     name: "copy-tabby-agent",
     entry: ["scripts/dummy.js"],
     clean: true,
     esbuildPlugins: [
       copy({
-        assets: { from: `${tabbyAgentDist}/**`, to: "dist/tabby-agent" },
+        assets: { from: `${tabbyAgentDist}/**`, to: path.join("dist", "tabby-agent") },
         resolveFrom: "cwd",
       }),
     ],
@@ -37,6 +39,9 @@ export default defineConfig(async (options: Options): Promise<Options[]> => {
     platform: "node",
     target: "node18",
     sourcemap: true,
+    loader: {
+      ".html": "text",
+    },
     define: {
       "process.env.IS_BROWSER": "false",
     },
@@ -49,7 +54,7 @@ export default defineConfig(async (options: Options): Promise<Options[]> => {
       js: banner,
     },
     onSuccess: options.env?.["LAUNCH_ON_SUCCESS"]
-      ? "code --extensionDevelopmentPath=$PWD --disable-extensions"
+      ? `code --extensionDevelopmentPath=${__dirname} --disable-extensions`
       : undefined,
   };
   const buildBrowserTask: Options = {
@@ -58,6 +63,9 @@ export default defineConfig(async (options: Options): Promise<Options[]> => {
     outDir: "dist/browser",
     platform: "browser",
     sourcemap: true,
+    loader: {
+      ".html": "text",
+    },
     define: {
       "process.env.IS_BROWSER": "true",
     },
@@ -75,7 +83,7 @@ export default defineConfig(async (options: Options): Promise<Options[]> => {
       js: banner,
     },
     onSuccess: options.env?.["LAUNCH_ON_SUCCESS"]
-      ? "vscode-test-web --extensionDevelopmentPath=$PWD --browserType=chromium --port=3000"
+      ? `vscode-test-web --extensionDevelopmentPath=${__dirname} --browserType=chromium --port=3000`
       : undefined,
   };
 
