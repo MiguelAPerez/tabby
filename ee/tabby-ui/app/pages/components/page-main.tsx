@@ -1,19 +1,18 @@
 'use client'
 
 import { CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
 import slugify from '@sindresorhus/slugify'
 import { AnimatePresence, motion } from 'framer-motion'
-import { compact, uniqBy } from 'lodash-es'
-import moment from 'moment'
+import { compact, flatten, omit, uniqBy } from 'lodash-es'
+import { ImperativePanelHandle } from 'react-resizable-panels'
 import { toast } from 'sonner'
 import { useQuery } from 'urql'
 
 import { ERROR_CODE_NOT_FOUND, SLUG_TITLE_MAX_LENGTH } from '@/lib/constants'
-import { graphql } from '@/lib/gql/generates'
+import { useEnableDeveloperMode } from '@/lib/experiment-flags'
 import {
+  CreatePageRunSubscription,
   CreatePageSectionRunSubscription,
-  CreateThreadToPageRunSubscription,
   MoveSectionDirection
 } from '@/lib/gql/generates/graphql'
 import { useCurrentTheme } from '@/lib/hooks/use-current-theme'
@@ -21,31 +20,49 @@ import { useDebounceValue } from '@/lib/hooks/use-debounce'
 import { useLatest } from '@/lib/hooks/use-latest'
 import { useMe } from '@/lib/hooks/use-me'
 import useRouterStuff from '@/lib/hooks/use-router-stuff'
-import { updatePendingThreadId, usePageStore } from '@/lib/stores/page-store'
-import { clearHomeScrollPosition } from '@/lib/stores/scroll-store'
+import { clearPendingThread, usePageStore } from '@/lib/stores/page-store'
 import { client, useMutation } from '@/lib/tabby/gql'
 import {
+  contextInfoQuery,
   listPages,
   listPageSections,
   listSecuredUsers
 } from '@/lib/tabby/query'
 import { ExtendedCombinedError } from '@/lib/types'
-import { cn, nanoid } from '@/lib/utils'
-import { buttonVariants } from '@/components/ui/button'
-import { IconClock, IconFileSearch } from '@/components/ui/icons'
+import { cn, isCodeSourceContext, nanoid } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { IconBug } from '@/components/ui/icons'
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup
+} from '@/components/ui/resizable'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Skeleton } from '@/components/ui/skeleton'
 import { ButtonScrollToBottom } from '@/components/button-scroll-to-bottom'
 import { BANNER_HEIGHT, useShowDemoBanner } from '@/components/demo-banner'
+import { DevPanel } from '@/components/dev-panel'
 import LoadingWrapper from '@/components/loading-wrapper'
-import { MessageMarkdown } from '@/components/message-markdown'
-import NotFoundPage from '@/components/not-found-page'
+import { SourceIcon } from '@/components/source-icon'
 import { UserAvatar } from '@/components/user-avatar'
 
-import { PageItem, SectionItem } from '../types'
+import {
+  createPageRunSubscription,
+  createPageSectionRunSubscription,
+  createThreadToPageRunSubscription,
+  deletePageSectionMutation,
+  movePageSectionPositionMutation
+} from '../lib/query'
+import { formatTime } from '../lib/utils'
+import { DebugData, PageItem, SectionItem } from '../types'
+import { ErrorView } from './error-view'
 import { Header } from './header'
 import { Navbar } from './nav-bar'
+import { NewPageForm } from './new-page-form'
 import { NewSectionForm } from './new-section-form'
+import { PageContent } from './page-content'
 import { PageContext } from './page-context'
+import { PageTitle } from './page-title'
 import { SectionContent } from './section-content'
 import { SectionTitle } from './section-title'
 import {
@@ -55,81 +72,21 @@ import {
   SectionTitleSkeleton
 } from './skeleton'
 
-const createThreadToPageRunSubscription = graphql(/* GraphQL */ `
-  subscription createThreadToPageRun($threadId: ID!) {
-    createThreadToPageRun(threadId: $threadId) {
-      __typename
-      ... on PageCreated {
-        id
-        authorId
-        title
-      }
-      ... on PageContentDelta {
-        delta
-      }
-      ... on PageContentCompleted {
-        id
-      }
-      ... on PageSectionsCreated {
-        sections {
-          id
-          title
-          position
-        }
-      }
-      ... on PageSectionContentDelta {
-        id
-        delta
-      }
-      ... on PageSectionContentCompleted {
-        id
-      }
-      ... on PageCompleted {
-        id
-      }
-    }
-  }
-`)
-
-const createPageSectionRunSubscription = graphql(/* GraphQL */ `
-  subscription createPageSectionRun($input: CreatePageSectionRunInput!) {
-    createPageSectionRun(input: $input) {
-      __typename
-      ... on PageSection {
-        id
-        title
-        position
-      }
-      ... on PageSectionContentDelta {
-        delta
-      }
-      ... on PageSectionContentCompleted {
-        id
-      }
-    }
-  }
-`)
-
-const deletePageSectionMutation = graphql(/* GraphQL */ `
-  mutation DeletePageSection($sectionId: ID!) {
-    deletePageSection(sectionId: $sectionId)
-  }
-`)
-
-const movePageSectionPositionMutation = graphql(/* GraphQL */ `
-  mutation movePageSection($id: ID!, $direction: MoveSectionDirection!) {
-    movePageSection(id: $id, direction: $direction)
-  }
-`)
-
 const PAGE_SIZE = 30
+
+type PageRunItem = CreatePageRunSubscription['createPageRun']
 
 export function Page() {
   const [{ data: meData }] = useMe()
+  const [{ data: contextInfoData, fetching: fetchingContextInfo }] = useQuery({
+    query: contextInfoQuery
+  })
+  const [enableDeveloperMode] = useEnableDeveloperMode()
   const { updateUrlComponents, pathname, router } = useRouterStuff()
   const [activePathname, setActivePathname] = useState<string | undefined>()
   const [isPathnameInitialized, setIsPathnameInitialized] = useState(false)
   const pendingThreadId = usePageStore(state => state.pendingThreadId)
+  const pendingThreadTitle = usePageStore(state => state.pendingThreadTitle)
   const [mode, setMode] = useState<'edit' | 'view'>(
     pendingThreadId ? 'edit' : 'view'
   )
@@ -150,15 +107,26 @@ export function Page() {
   const { theme } = useCurrentTheme()
   const [pageId, setPageId] = useState<string | undefined>()
   const [page, setPage] = useState<PageItem | undefined>()
+  const [debugData, setDebugData] = useState<DebugData | undefined>()
   const [sections, setSections] = useState<Array<SectionItem>>()
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<ExtendedCombinedError | undefined>()
   const [submitting, setSubmitting] = useState(false)
+  const [isGeneratingPageTitle, setIsGeneratingPageTitle] = useState(false)
+  const [devPanelOpen, setDevPanelOpen] = useState(false)
+  const devPanelRef = useRef<ImperativePanelHandle>(null)
+  const [devPanelSize, setDevPanelSize] = useState(45)
+  const prevDevPanelSize = useRef(devPanelSize)
+
   const pageIdFromURL = useMemo(() => {
     const regex = /^\/pages\/(.*)/
     if (!activePathname) return undefined
+    const id = activePathname.match(regex)?.[1]?.split('-').pop()
+    return id === 'new' ? undefined : id
+  }, [activePathname])
 
-    return activePathname.match(regex)?.[1]?.split('-').pop()
+  const isNew = useMemo(() => {
+    return activePathname === '/pages/new'
   }, [activePathname])
 
   const unsubscribeFn = useRef<(() => void) | undefined>()
@@ -171,24 +139,78 @@ export function Page() {
     setPageCompleted(true)
   })
 
-  const processPageStream = (
-    data: CreateThreadToPageRunSubscription['createThreadToPageRun']
-  ) => {
-    switch (data.__typename) {
-      case 'PageCreated':
-        const now = new Date().toISOString()
-        const nextPage: PageItem = {
-          id: data.id,
-          authorId: data.authorId,
-          title: data.title,
-          content: '',
-          updatedAt: now,
-          createdAt: now
+  const updateDebugData = (data: DebugData | undefined | null) => {
+    if (!data) return
+
+    setDebugData(prev => {
+      if (!prev) return omit(data, '__typename')
+
+      if ('generateSectionTitlesMessages' in data) {
+        return {
+          ...prev,
+          generateSectionTitlesMessages: compact(
+            flatten([
+              prev.generateSectionTitlesMessages,
+              data.generateSectionTitlesMessages
+            ])
+          )
         }
-        setPage(nextPage)
+      } else if ('generateSectionContentMessages' in data) {
+        return {
+          ...prev,
+          generateSectionContentMessages: compact(
+            flatten([
+              prev.generateSectionContentMessages,
+              data.generateSectionContentMessages
+            ])
+          )
+        }
+      } else {
+        return {
+          ...prev,
+          ...omit(data, '__typename')
+        }
+      }
+    })
+  }
+
+  // `/pages` -> `/pages/{slug}-{pageId}`
+  const updatePageURL = (page: { id: string; title: string }) => {
+    if (!page) return
+    const { title, id } = page
+    const firstLine = (title || '').split('\n')[0] ?? ''
+    const _title = firstLine.slice(0, SLUG_TITLE_MAX_LENGTH)
+    const slug = slugify(_title)
+    const slugWithPageId = compact([slug, id]).join('-')
+
+    const path = updateUrlComponents({
+      pathname: `/pages/${slugWithPageId}`,
+      replace: true
+    })
+
+    return location.origin + path
+  }
+
+  const processPageRunItemStream = (data: PageRunItem) => {
+    // debugger
+    switch (data.__typename) {
+      case 'PageCreated': {
         setPageId(data.id)
-        updatePageURL(nextPage)
+        setPage(prev => {
+          if (!prev) return prev
+
+          return {
+            ...prev,
+            id: data.id,
+            title: data.title,
+            authorId: data.authorId
+          }
+        })
+        updateDebugData(data.debugData)
+        setIsGeneratingPageTitle(false)
+        updatePageURL(data)
         break
+      }
       case 'PageContentDelta': {
         setPage(prev => {
           if (!prev) return prev
@@ -199,25 +221,96 @@ export function Page() {
         })
         break
       }
-
       case 'PageContentCompleted': {
+        updateDebugData(data.debugData)
         break
       }
       case 'PageSectionsCreated': {
         const nextSections: SectionItem[] = data.sections.map(x => ({
           ...x,
           pageId: pageId as string,
-          content: ''
+          content: '',
+          attachments: {
+            code: [],
+            codeFileList: null,
+            doc: []
+          }
         }))
         setPendingSectionIds(new Set(data.sections.map(x => x.id)))
         setSections(nextSections)
+
+        updateDebugData(data.debugData)
+        break
+      }
+      case 'PageSectionAttachmentCodeFileList': {
+        setSections(prev => {
+          if (!prev || !prev.length) return prev
+
+          return prev.map(x => {
+            if (x.id === data.id) {
+              return {
+                ...x,
+                attachments: {
+                  ...x.attachments,
+                  codeFileList: data.codeFileList
+                }
+              }
+            } else {
+              return x
+            }
+          })
+        })
+        break
+      }
+      case 'PageSectionAttachmentCode': {
+        setSections(prev => {
+          if (!prev || !prev.length) return prev
+
+          return prev.map(x => {
+            if (x.id === data.id) {
+              return {
+                ...x,
+                attachments: {
+                  ...x.attachments,
+                  code: data.codes.map(x => ({
+                    ...x.code,
+                    extra: { scores: x.scores }
+                  }))
+                }
+              }
+            }
+
+            return x
+          })
+        })
+        break
+      }
+      case 'PageSectionAttachmentDoc': {
+        setSections(prev => {
+          if (!prev || !prev.length) return prev
+
+          return prev.map(x => {
+            if (x.id === data.id) {
+              return {
+                ...x,
+                attachments: {
+                  ...x.attachments,
+                  doc: data.doc.map(x => ({
+                    ...x.doc,
+                    extra: { score: x.score }
+                  }))
+                }
+              }
+            }
+            return x
+          })
+        })
         break
       }
       case 'PageSectionContentDelta': {
         setCurrentSectionId(data.id)
         setSections(prev => {
-          const section = prev?.find(x => x.id === data.id)
-          if (!section || !prev) {
+          if (!prev) {
             return prev
           }
           return prev.map(x => {
@@ -230,6 +323,7 @@ export function Page() {
             return x
           })
         })
+        break
       }
       case 'PageSectionContentCompleted': {
         setPendingSectionIds(prev => {
@@ -240,6 +334,8 @@ export function Page() {
           newSet.delete(data.id)
           return newSet
         })
+
+        updateDebugData(data.debugData)
         break
       }
       case 'PageCompleted':
@@ -250,7 +346,7 @@ export function Page() {
     }
   }
 
-  const processNewSectionStream = (
+  const processSectionRunStream = (
     data: CreatePageSectionRunSubscription['createPageSectionRun']
   ) => {
     switch (data.__typename) {
@@ -263,18 +359,29 @@ export function Page() {
           const _sections = prev.slice(0, -1)
           return [
             ..._sections,
-            { id, title, position, content: '', pageId: pageId as string }
+            {
+              id,
+              title,
+              position,
+              content: '',
+              pageId: pageId as string,
+              attachments: {
+                code: [],
+                codeFileList: null,
+                doc: []
+              }
+            }
           ]
         })
+        updateDebugData(data.debugData)
         break
       }
       case 'PageSectionContentDelta': {
-        const { delta } = data
+        const { delta, id } = data
         setSections(prev => {
           if (!prev) return prev
-          const len = prev.length
-          return prev.map((x, index) => {
-            if (index === len - 1) {
+          return prev.map(x => {
+            if (x.id === id) {
               return {
                 ...x,
                 content: x.content + delta
@@ -285,7 +392,73 @@ export function Page() {
         })
         break
       }
+      case 'PageSectionAttachmentCodeFileList': {
+        setSections(prev => {
+          if (!prev || !prev.length) return prev
+
+          return prev.map(x => {
+            if (x.id === data.id) {
+              return {
+                ...x,
+                attachments: {
+                  ...x.attachments,
+                  codeFileList: data.codeFileList
+                }
+              }
+            } else {
+              return x
+            }
+          })
+        })
+        break
+      }
+      case 'PageSectionAttachmentCode': {
+        setSections(prev => {
+          if (!prev || !prev.length) return prev
+
+          return prev.map(x => {
+            if (x.id === data.id) {
+              return {
+                ...x,
+                attachments: {
+                  code: data.codes.map(x => ({
+                    ...x.code,
+                    extra: { scores: x.scores }
+                  })),
+                  codeFileList: x.attachments.codeFileList
+                }
+              }
+            } else {
+              return x
+            }
+          })
+        })
+        break
+      }
+      case 'PageSectionAttachmentDoc': {
+        setSections(prev => {
+          if (!prev || !prev.length) return prev
+
+          return prev.map(x => {
+            if (x.id === data.id) {
+              return {
+                ...x,
+                attachments: {
+                  ...x.attachments,
+                  doc: data.doc.map(x => ({
+                    ...x.doc,
+                    extra: { score: x.score }
+                  }))
+                }
+              }
+            }
+            return x
+          })
+        })
+        break
+      }
       case 'PageSectionContentCompleted': {
+        updateDebugData(data.debugData)
         stop.current()
         break
       }
@@ -305,7 +478,12 @@ export function Page() {
         title,
         pageId,
         content: '',
-        position: lastPosition + 1
+        position: lastPosition + 1,
+        attachments: {
+          code: [],
+          codeFileList: null,
+          doc: []
+        }
       }
 
       if (!prev) return [newSection]
@@ -318,7 +496,17 @@ export function Page() {
       .subscription(createPageSectionRunSubscription, {
         input: {
           pageId,
-          title
+          titlePrompt: title,
+          docQuery: {
+            sourceIds: compact([page?.codeSourceId]),
+            content: title,
+            searchPublic: true
+          },
+          debugOption: enableDeveloperMode?.value
+            ? {
+                returnChatCompletionRequest: true
+              }
+            : undefined
         }
       })
       .subscribe(res => {
@@ -333,13 +521,30 @@ export function Page() {
         if (!value) {
           return
         }
-        processNewSectionStream(value)
+        processSectionRunStream(value)
       })
 
     unsubscribeFn.current = unsubscribe
   }
 
-  const convertThreadToPage = (threadId: string) => {
+  const convertThreadToPage = (threadId: string, threadTitle: string) => {
+    const now = new Date().toISOString()
+    const tempId = nanoid()
+    const nextPage: PageItem = {
+      id: tempId,
+      authorId: '',
+      title: threadTitle,
+      content: '',
+      updatedAt: now,
+      createdAt: now
+    }
+    setPage(nextPage)
+    setIsLoading(true)
+    setPageId(tempId)
+    setIsGeneratingPageTitle(true)
+    setError(undefined)
+    setPageCompleted(false)
+
     const { unsubscribe } = client
       .subscription(createThreadToPageRunSubscription, {
         threadId
@@ -357,10 +562,75 @@ export function Page() {
           return
         }
 
-        processPageStream(value)
+        processPageRunItemStream(value)
       })
 
     return unsubscribe
+  }
+
+  const createPage = async ({
+    titlePrompt,
+    codeSourceId
+  }: {
+    titlePrompt: string
+    codeSourceId?: string
+  }) => {
+    const now = new Date().toISOString()
+    const tempId = nanoid()
+    const nextPage: PageItem = {
+      id: tempId,
+      authorId: '',
+      title: titlePrompt,
+      content: '',
+      codeSourceId,
+      updatedAt: now,
+      createdAt: now
+    }
+    setPage(nextPage)
+    setPageId(tempId)
+    setIsLoading(true)
+    setIsGeneratingPageTitle(true)
+    setPageCompleted(false)
+
+    const { unsubscribe } = client
+      .subscription(createPageRunSubscription, {
+        input: {
+          titlePrompt,
+          codeQuery: codeSourceId
+            ? {
+                sourceId: codeSourceId,
+                content: titlePrompt
+              }
+            : null,
+          docQuery: {
+            sourceIds: compact([codeSourceId]),
+            content: titlePrompt,
+            searchPublic: true
+          },
+          debugOption: enableDeveloperMode?.value
+            ? {
+                returnChatCompletionRequest: true
+              }
+            : undefined
+        }
+      })
+      .subscribe(res => {
+        // console.log(res)
+        if (res?.error) {
+          setIsLoading(false)
+          setError(res.error)
+          unsubscribe()
+          return
+        }
+        const value = res.data?.createPageRun
+        if (!value) {
+          return
+        }
+
+        processPageRunItemStream(value)
+      })
+
+    unsubscribeFn.current = unsubscribe
   }
 
   const deletePageSection = useMutation(deletePageSectionMutation)
@@ -383,6 +653,8 @@ export function Page() {
       pause: !pageIdFromURL
     })
 
+  // do not
+  // todo if it is ready, do not setPage
   useEffect(() => {
     const _page = pagesData?.pages.edges?.[0]?.node
     if (_page) {
@@ -448,6 +720,24 @@ export function Page() {
     return meData.me.id === page.node.authorId
   }, [meData, pagesData, pageIdFromURL])
 
+  const repository = useMemo(() => {
+    if (!page?.codeSourceId) return undefined
+
+    const target = contextInfoData?.contextInfo?.sources.find(
+      x => isCodeSourceContext(x.sourceKind) && x.sourceId === page.codeSourceId
+    )
+    return target
+  }, [page?.codeSourceId, contextInfoData])
+
+  useEffect(() => {
+    if (devPanelOpen) {
+      devPanelRef.current?.expand()
+      devPanelRef.current?.resize(devPanelSize)
+    } else {
+      devPanelRef.current?.collapse()
+    }
+  }, [devPanelOpen])
+
   useEffect(() => {
     if (page?.title) {
       document.title = page.title
@@ -460,23 +750,6 @@ export function Page() {
       setIsReady(true)
     }
   }, [pageSectionsError])
-
-  // `/pages` -> `/pages/{slug}-{pageId}`
-  const updatePageURL = (page: PageItem) => {
-    if (!page) return
-    const { title, id } = page
-    const firstLine = (title || '').split('\n')[0] ?? ''
-    const _title = firstLine.slice(0, SLUG_TITLE_MAX_LENGTH)
-    const slug = slugify(_title)
-    const slugWithPageId = compact([slug, id]).join('-')
-
-    const path = updateUrlComponents({
-      pathname: `/pages/${slugWithPageId}`,
-      replace: true
-    })
-
-    return location.origin + path
-  }
 
   // for synchronizing the active pathname
   useEffect(() => {
@@ -494,16 +767,20 @@ export function Page() {
       initializing.current = true
 
       if (pendingThreadId) {
-        setIsLoading(true)
-        setError(undefined)
-        setPageCompleted(false)
         // trigger convert
-        unsubscribeFn.current = convertThreadToPage(pendingThreadId)
-        updatePendingThreadId(undefined)
+        unsubscribeFn.current = convertThreadToPage(
+          pendingThreadId,
+          pendingThreadTitle ?? ''
+        )
+        clearPendingThread()
         return
       }
 
-      if (!pageId) {
+      if (isNew) {
+        setMode('edit')
+      }
+
+      if (!pageId && !isNew) {
         router.replace('/')
       }
     }
@@ -512,6 +789,12 @@ export function Page() {
       init()
     }
   }, [isPathnameInitialized])
+
+  useEffect(() => {
+    return () => {
+      unsubscribeFn.current?.()
+    }
+  }, [])
 
   const onDeleteSection = async (sectionId: string) => {
     if (!pageIdFromURL || isLoading) return
@@ -590,12 +873,49 @@ export function Page() {
       })
   }
 
+  const onUpdateSections = (id: string, values: Partial<SectionItem>) => {
+    if (!id) return
+
+    setSections(prev => {
+      if (!prev) return prev
+
+      return prev.map(x => {
+        if (x.id === id) {
+          return {
+            ...x,
+            ...values
+          }
+        }
+        return x
+      })
+    })
+  }
+
+  const onPanelLayout = (sizes: number[]) => {
+    if (sizes?.[1]) {
+      setDevPanelSize(sizes[1])
+    }
+  }
+
+  const onToggleFullScreen = (fullScreen: boolean) => {
+    let nextSize = prevDevPanelSize.current
+    if (fullScreen) {
+      nextSize = 100
+    } else if (nextSize === 100) {
+      nextSize = 45
+    }
+    devPanelRef.current?.resize(nextSize)
+    setDevPanelSize(nextSize)
+    prevDevPanelSize.current = devPanelSize
+  }
+
   const formatedPageError: ExtendedCombinedError | undefined = useMemo(() => {
     if (!isReady || fetchingPage || !pageIdFromURL) return undefined
     if (pageError || !pagesData?.pages?.edges?.length) {
       return pageError || new Error(ERROR_CODE_NOT_FOUND)
     }
   }, [pagesData, fetchingPage, pageError, isReady, pageIdFromURL])
+
   const [isFetchingPageSections] = useDebounceValue(
     fetchingPageSections ||
       pageSectionData?.pageSections?.pageInfo?.hasNextPage,
@@ -606,11 +926,13 @@ export function Page() {
     ? { height: `calc(100vh - ${BANNER_HEIGHT})` }
     : { height: '100vh' }
 
-  if (isReady && (formatedPageError || pageSectionsError)) {
+  if (isReady && (formatedPageError || pageSectionsError || error)) {
     return (
       <ErrorView
         error={
-          (formatedPageError || pageSectionsError) as ExtendedCombinedError
+          (formatedPageError ||
+            pageSectionsError ||
+            error) as ExtendedCombinedError
         }
         pageIdFromURL={pageIdFromURL}
       />
@@ -634,191 +956,239 @@ export function Page() {
         isPageOwner,
         mode,
         setMode,
+        contextInfo: contextInfoData?.contextInfo,
+        fetchingContextInfo,
         pendingSectionIds,
         setPendingSectionIds,
         currentSectionId,
+        pageIdFromURL,
+        isNew,
         onDeleteSection,
-        onMoveSectionPosition
+        onMoveSectionPosition,
+        enableDeveloperMode: enableDeveloperMode.value,
+        devPanelOpen,
+        setDevPanelOpen
       }}
     >
       <div style={style}>
-        <Header pageIdFromURL={pageIdFromURL} streamingDone={!isLoading} />
-        <LoadingWrapper loading={!isReady || !page} fallback={<PageSkeleton />}>
-          <main className="h-[calc(100%-4rem)] pb-8 lg:pb-0">
-            <ScrollArea className="h-full w-full" ref={contentContainerRef}>
-              <div className="mx-auto grid grid-cols-4 gap-2 px-4 pb-32 lg:max-w-5xl lg:px-0">
-                <div className="relative col-span-3">
-                  {/* page title */}
-                  <div className="mb-2 mt-8">
-                    <LoadingWrapper
-                      loading={!page}
-                      fallback={<SectionTitleSkeleton />}
-                    >
-                      <h1 className="text-4xl font-semibold">{page?.title}</h1>
-                    </LoadingWrapper>
-                    <div className="my-4 flex gap-4 text-sm text-muted-foreground">
-                      <LoadingWrapper
-                        loading={fetchingAuthor || !page?.authorId}
-                      >
-                        {!!page && (
-                          <>
-                            <div className="flex items-center gap-1">
-                              <UserAvatar user={author} className="h-6 w-6" />
-                              <div>{author?.name}</div>
-                            </div>
-
-                            <div className="flex items-center gap-3">
-                              <div className="flex items-center gap-0.5">
-                                <IconClock />
-                                <span>{formatTime(page.createdAt)}</span>
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </LoadingWrapper>
-                    </div>
-                  </div>
-
-                  {/* page content */}
-                  <LoadingWrapper
-                    // FIXME
-                    loading={!page || (isLoading && !page?.content)}
-                    fallback={<SectionContentSkeleton />}
-                  >
-                    <MessageMarkdown
-                      message={page?.content ?? ''}
-                      supportsOnApplyInEditorV2={false}
-                    />
-                  </LoadingWrapper>
-
-                  {/* sections */}
-                  <LoadingWrapper
-                    loading={!page || (isLoading && !sections?.length)}
-                    fallback={
-                      <div className="my-8 w-full">
-                        <SectionsSkeleton />
+        <ResizablePanelGroup direction="vertical" onLayout={onPanelLayout}>
+          <ResizablePanel>
+            <Header pageIdFromURL={pageIdFromURL} streamingDone={!isLoading} />
+            <LoadingWrapper
+              loading={!isNew && (!isReady || !page)}
+              fallback={<PageSkeleton />}
+              delay={0}
+            >
+              <main className="h-[calc(100%-4rem)] pb-8 lg:pb-0">
+                <ScrollArea className="h-full w-full" ref={contentContainerRef}>
+                  <div className="mx-auto grid grid-cols-4 gap-2 px-4 pb-32 lg:max-w-5xl lg:px-0">
+                    {isNew && !page ? (
+                      <div className="col-span-4 mt-8 rounded-xl border pl-1 pr-3 pt-2 ring-2 ring-transparent transition-colors focus-within:ring-ring focus-visible:ring-ring">
+                        <NewPageForm onSubmit={createPage} />
                       </div>
-                    }
-                  >
-                    <AnimatePresence
-                      key={`${isLoading}-${mode}`}
-                      initial={false}
-                    >
-                      {sections?.map((section, index) => {
-                        const isSectionGenerating =
-                          isLoading && section.id === currentSectionId
-                        const enableMoveUp = index !== 0
-                        const enableMoveDown = index < sections.length - 1
+                    ) : (
+                      <>
+                        <div className="relative col-span-3">
+                          {/* page title */}
+                          <div className="mb-2 mt-8">
+                            <div
+                              className={cn('flex items-center gap-2', {
+                                'mb-4': !!repository || enableDeveloperMode
+                              })}
+                            >
+                              {!!repository && (
+                                <div className="inline-flex items-center gap-1 rounded-lg bg-accent px-2 py-1 text-xs font-medium text-accent-foreground">
+                                  <SourceIcon
+                                    kind={repository.sourceKind}
+                                    className="h-3.5 w-3.5 shrink-0"
+                                  />
+                                  <span className="truncate">
+                                    {repository.sourceName}
+                                  </span>
+                                </div>
+                              )}
+                              {enableDeveloperMode && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    setDevPanelOpen(true)
+                                  }}
+                                >
+                                  <IconBug />
+                                </Button>
+                              )}
+                            </div>
+                            <LoadingWrapper
+                              loading={!page}
+                              fallback={<SectionTitleSkeleton />}
+                            >
+                              <PageTitle
+                                page={page}
+                                isGeneratingPageTitle={isGeneratingPageTitle}
+                                onUpdate={title => {
+                                  setPage(p => {
+                                    if (!p) return p
+                                    return { ...p, title }
+                                  })
+                                }}
+                              />
+                            </LoadingWrapper>
+                            <div className="my-4 flex gap-4 text-sm">
+                              <LoadingWrapper
+                                loading={fetchingAuthor || !page?.authorId}
+                                fallback={<Skeleton />}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <UserAvatar
+                                    user={author}
+                                    className="h-8 w-8"
+                                  />
+                                  <div className="pt-0.5">
+                                    <div className="text-sm leading-none">
+                                      {author?.name}
+                                    </div>
+                                    <span className="text-xs leading-none text-muted-foreground">
+                                      {formatTime(page?.createdAt)}
+                                    </span>
+                                  </div>
+                                </div>
+                              </LoadingWrapper>
+                            </div>
+                          </div>
 
-                        return (
-                          <motion.div
-                            layout={!isLoading && mode === 'edit'}
-                            key={`section_${section.id}`}
-                            exit={
-                              isLoading
-                                ? { opacity: 0, transition: { duration: 0 } }
-                                : { opacity: 0, transition: { duration: 0.5 } }
+                          {/* page content */}
+                          <LoadingWrapper
+                            loading={!page || (isLoading && !page?.content)}
+                            fallback={<SectionContentSkeleton />}
+                          >
+                            <PageContent
+                              page={page}
+                              onUpdate={content => {
+                                setPage(p => {
+                                  if (!p) return p
+                                  return { ...p, content }
+                                })
+                              }}
+                            />
+                          </LoadingWrapper>
+
+                          {/* sections */}
+                          <LoadingWrapper
+                            loading={!page || (isLoading && !sections?.length)}
+                            fallback={
+                              <div className="my-8 w-full">
+                                <SectionsSkeleton />
+                              </div>
                             }
                           >
-                            <SectionTitle
-                              className="section-title pt-8"
-                              section={section}
-                            />
-                            <SectionContent
-                              section={section}
-                              isGenerating={isSectionGenerating}
-                              enableMoveUp={enableMoveUp}
-                              enableMoveDown={enableMoveDown}
-                            />
-                          </motion.div>
-                        )
-                      })}
-                    </AnimatePresence>
-
-                    {/* append section */}
-                    {isPageOwner && mode === 'edit' && pageCompleted && (
-                      <NewSectionForm
-                        onSubmit={appendNewSection}
-                        disabled={!pageId || isLoading}
-                        className="mt-10"
-                      />
+                            <AnimatePresence
+                              key={`${isLoading}-${mode}`}
+                              initial={false}
+                            >
+                              {sections?.map((section, index) => {
+                                const isSectionGenerating =
+                                  isLoading && section.id === currentSectionId
+                                const enableMoveUp = index !== 0
+                                const enableMoveDown =
+                                  index < sections.length - 1
+                                return (
+                                  <motion.div
+                                    layout={
+                                      !isLoading && mode === 'edit'
+                                        ? 'position'
+                                        : false
+                                    }
+                                    key={`section_${section.id}`}
+                                    exit={{ opacity: 0 }}
+                                    className="space-y-2"
+                                  >
+                                    <SectionTitle
+                                      className="pt-12 prose-p:leading-tight"
+                                      section={section}
+                                      onUpdate={title => {
+                                        onUpdateSections(section.id, { title })
+                                      }}
+                                    />
+                                    <SectionContent
+                                      section={section}
+                                      isGenerating={isSectionGenerating}
+                                      enableMoveUp={enableMoveUp}
+                                      enableMoveDown={enableMoveDown}
+                                      onUpdate={content => {
+                                        onUpdateSections(section.id, {
+                                          content
+                                        })
+                                      }}
+                                      enableDeveloperMode={
+                                        enableDeveloperMode.value
+                                      }
+                                    />
+                                  </motion.div>
+                                )
+                              })}
+                            </AnimatePresence>
+                            {/* append section */}
+                            {isPageOwner &&
+                              mode === 'edit' &&
+                              pageCompleted && (
+                                <NewSectionForm
+                                  onSubmit={appendNewSection}
+                                  disabled={!pageId || isLoading}
+                                  className="mt-10"
+                                />
+                              )}
+                          </LoadingWrapper>
+                        </div>
+                        <div className="relative col-span-1">
+                          <Navbar sections={sections} />
+                        </div>
+                      </>
                     )}
-                  </LoadingWrapper>
-                </div>
-                <div className="relative col-span-1">
-                  <Navbar sections={sections} />
-                </div>
-              </div>
-            </ScrollArea>
+                  </div>
+                </ScrollArea>
 
-            <ButtonScrollToBottom
-              className={cn(
-                '!fixed !bottom-[5.4rem] !right-4 !top-auto z-40 border-muted-foreground lg:!bottom-[2.85rem]'
-              )}
-              container={contentContainerRef.current as HTMLDivElement}
-              offset={100}
-              // On mobile browsers(Chrome & Safari) in dark mode, using `background: hsl(var(--background))`
-              // result in `rgba(0, 0, 0, 0)`. To prevent this, explicitly set --background
-              style={
-                theme === 'dark'
-                  ? ({ '--background': '0 0% 12%' } as CSSProperties)
-                  : {}
-              }
+                <ButtonScrollToBottom
+                  className={cn(
+                    '!fixed !bottom-[5.4rem] !right-4 !top-auto z-40 border-muted-foreground lg:!bottom-[2.85rem]'
+                  )}
+                  container={contentContainerRef.current as HTMLDivElement}
+                  offset={100}
+                  // On mobile browsers(Chrome & Safari) in dark mode, using `background: hsl(var(--background))`
+                  // result in `rgba(0, 0, 0, 0)`. To prevent this, explicitly set --background
+                  style={
+                    theme === 'dark'
+                      ? ({ '--background': '0 0% 12%' } as CSSProperties)
+                      : {}
+                  }
+                />
+              </main>
+            </LoadingWrapper>
+          </ResizablePanel>
+          <ResizableHandle
+            className={cn(
+              'hidden !h-[4px] border-none bg-background shadow-[0px_-4px_4px_rgba(0,0,0,0.2)] hover:bg-blue-500 active:bg-blue-500 dark:shadow-[0px_-4px_4px_rgba(255,255,255,0.2)]',
+              devPanelOpen && 'block'
+            )}
+          />
+          <ResizablePanel
+            collapsible
+            collapsedSize={0}
+            defaultSize={0}
+            ref={devPanelRef}
+            onCollapse={() => setDevPanelOpen(false)}
+            className="z-50"
+          >
+            <DevPanel
+              onClose={() => setDevPanelOpen(false)}
+              value={debugData}
+              isFullScreen={devPanelSize === 100}
+              onToggleFullScreen={onToggleFullScreen}
+              scrollOnUpdate={false}
             />
-          </main>
-        </LoadingWrapper>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
     </PageContext.Provider>
   )
-}
-
-interface ErrorViewProps {
-  error: ExtendedCombinedError
-  pageIdFromURL?: string
-}
-function ErrorView({ error, pageIdFromURL }: ErrorViewProps) {
-  let title = 'Something went wrong'
-  let description = 'Failed to fetch, please refresh the page'
-
-  if (error.message === ERROR_CODE_NOT_FOUND) {
-    return <NotFoundPage />
-  }
-
-  return (
-    <div className="flex h-screen flex-col">
-      <Header pageIdFromURL={pageIdFromURL} />
-      <div className="flex-1">
-        <div className="flex h-full flex-col items-center justify-center gap-2">
-          <div className="flex items-center gap-2">
-            <IconFileSearch className="h-6 w-6" />
-            <div className="text-xl font-semibold">{title}</div>
-          </div>
-          <div>{description}</div>
-          <Link
-            href="/"
-            onClick={clearHomeScrollPosition}
-            className={cn(buttonVariants(), 'mt-4 gap-2')}
-          >
-            <span>Home</span>
-          </Link>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function formatTime(time: string) {
-  const targetTime = moment(time)
-
-  if (targetTime.isBefore(moment().subtract(1, 'year'))) {
-    const timeText = targetTime.format('MMM D, YYYY, h:mm A')
-    return timeText
-  }
-
-  if (targetTime.isBefore(moment().subtract(1, 'month'))) {
-    const timeText = targetTime.format('MMM D, hh:mm A')
-    return `${timeText}`
-  }
-
-  return `${targetTime.fromNow()}`
 }

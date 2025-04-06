@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, TimeZone, Utc};
 use tantivy::{
     schema::{self, document::CompactDocValue, Value},
     TantivyDocument,
@@ -21,6 +22,7 @@ pub enum DocSearchDocument {
     Web(DocSearchWebDocument),
     Issue(DocSearchIssueDocument),
     Pull(DocSearchPullDocument),
+    Commit(DocSearchCommit),
 }
 
 #[derive(Error, Debug)]
@@ -77,6 +79,14 @@ pub struct DocSearchPullDocument {
     pub merged: bool,
 }
 
+#[derive(Clone)]
+pub struct DocSearchCommit {
+    pub sha: String,
+    pub message: String,
+    pub author_email: String,
+    pub author_at: DateTime<Utc>,
+}
+
 pub trait FromTantivyDocument {
     fn from_tantivy_document(doc: &TantivyDocument, chunk: &TantivyDocument) -> Option<Self>
     where
@@ -96,6 +106,9 @@ impl FromTantivyDocument for DocSearchDocument {
                 .map(DocSearchDocument::Issue),
             "pull" => DocSearchPullDocument::from_tantivy_document(doc, chunk)
                 .map(DocSearchDocument::Pull),
+            "commit" => {
+                DocSearchCommit::from_tantivy_document(doc, chunk).map(DocSearchDocument::Commit)
+            }
             _ => None,
         }
     }
@@ -210,6 +223,43 @@ impl FromTantivyDocument for DocSearchPullDocument {
     }
 }
 
+impl FromTantivyDocument for DocSearchCommit {
+    fn from_tantivy_document(doc: &TantivyDocument, _chunk: &TantivyDocument) -> Option<Self> {
+        let schema = IndexSchema::instance();
+        let sha = get_json_text_field(
+            doc,
+            schema.field_attributes,
+            structured_doc::fields::commit::SHA,
+        )
+        .to_string();
+        let message = get_json_text_field(
+            doc,
+            schema.field_attributes,
+            structured_doc::fields::commit::MESSAGE,
+        )
+        .to_string();
+        let author_email = get_json_text_field(
+            doc,
+            schema.field_attributes,
+            structured_doc::fields::commit::AUTHOR_EMAIL,
+        )
+        .to_string();
+        let author_at = get_json_date_field(
+            doc,
+            schema.field_attributes,
+            structured_doc::fields::commit::AUTHOR_AT,
+        )
+        .unwrap_or_default();
+
+        Some(Self {
+            sha,
+            message,
+            author_email,
+            author_at,
+        })
+    }
+}
+
 fn get_json_field<'a>(
     doc: &'a TantivyDocument,
     field: schema::Field,
@@ -251,4 +301,15 @@ fn get_json_option_text_field<'a>(
     name: &str,
 ) -> Option<&'a str> {
     get_json_option_field(doc, field, name).and_then(|field| field.as_str())
+}
+
+fn get_json_date_field(
+    doc: &TantivyDocument,
+    field: schema::Field,
+    name: &str,
+) -> Option<DateTime<Utc>> {
+    get_json_option_field(doc, field, name)
+        .and_then(|field| field.as_datetime())
+        .map(|x| x.into_timestamp_secs())
+        .and_then(|x| Utc.timestamp_opt(x, 0).single())
 }

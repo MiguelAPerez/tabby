@@ -1,4 +1,4 @@
-import { ReactNode, useContext, useMemo, useState } from 'react'
+import { Fragment, ReactNode, useContext, useMemo, useState } from 'react'
 import { compact, isNil } from 'lodash-es'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -20,6 +20,7 @@ import {
   convertToFilepath,
   encodeMentionPlaceHolder,
   getRangeFromAttachmentCode,
+  isAttachmentCommitDoc,
   resolveFileNameForDisplay
 } from '@/lib/utils'
 import {
@@ -31,7 +32,7 @@ import { MemoizedReactMarkdown } from '@/components/markdown'
 
 import './style.css'
 
-import { SquareFunctionIcon } from 'lucide-react'
+import { FileBox, SquareFunctionIcon } from 'lucide-react'
 import {
   FileLocation,
   Filepath,
@@ -42,13 +43,14 @@ import {
 
 import {
   MARKDOWN_CITATION_REGEX,
+  MARKDOWN_COMMAND_REGEX,
   MARKDOWN_FILE_REGEX,
   MARKDOWN_SOURCE_REGEX,
   MARKDOWN_SYMBOL_REGEX
 } from '@/lib/constants/regex'
 
 import { Mention } from '../mention-tag'
-import { IconFile } from '../ui/icons'
+import { IconFile, IconFileText } from '../ui/icons'
 import { Skeleton } from '../ui/skeleton'
 import { CodeElement } from './code'
 import { DocDetailView } from './doc-detail-view'
@@ -81,11 +83,10 @@ export interface MessageMarkdownProps {
   onLookupSymbol?: (
     symbol: string,
     hints?: LookupSymbolHint[] | undefined
-  ) => Promise<SymbolInfo | undefined>
+  ) => Promise<SymbolInfo | null>
   openInEditor?: (target: FileLocation) => void
   onCodeCitationClick?: (code: AttachmentCodeItem) => void
-  onCodeCitationMouseEnter?: (index: number) => void
-  onCodeCitationMouseLeave?: (index: number) => void
+  onLinkClick?: (url: string) => void
   contextInfo?: ContextInfo
   fetchingContextInfo?: boolean
   className?: string
@@ -93,6 +94,7 @@ export interface MessageMarkdownProps {
   canWrapLongLines?: boolean
   supportsOnApplyInEditorV2: boolean
   activeSelection?: FileContext
+  runShell?: (command: string) => Promise<void>
 }
 
 export function MessageMarkdown({
@@ -111,10 +113,11 @@ export function MessageMarkdown({
   openInEditor,
   supportsOnApplyInEditorV2,
   activeSelection,
+  runShell,
   ...rest
 }: MessageMarkdownProps) {
   const [symbolPositionMap, setSymbolLocationMap] = useState<
-    Map<string, SymbolInfo | undefined>
+    Map<string, SymbolInfo | null>
   >(new Map())
   const messageAttachments: MessageAttachments = useMemo(() => {
     const docs: MessageAttachments =
@@ -140,68 +143,106 @@ export function MessageMarkdown({
   const processMessagePlaceholder = (text: string) => {
     const elements: React.ReactNode[] = []
     let lastIndex = 0
-    let match
 
-    const addTextNode = (text: string) => {
-      if (text) {
-        elements.push(text)
-      }
+    type Match = {
+      pattern: RegExp
+      Component: (...arg: any) => ReactNode
+      getProps: Function
+      match: RegExpExecArray
     }
 
-    const processMatches = (
+    const allMatches: Match[] = []
+
+    const findMatches = (
       regex: RegExp,
       Component: (...arg: any) => ReactNode,
       getProps: Function
     ) => {
+      regex.lastIndex = 0
+      let match
       while ((match = regex.exec(text)) !== null) {
-        addTextNode(text.slice(lastIndex, match.index))
-        elements.push(<Component key={match.index} {...getProps(match)} />)
-        lastIndex = match.index + match[0].length
+        allMatches.push({
+          pattern: regex,
+          Component,
+          getProps,
+          match
+        })
       }
     }
 
-    processMatches(MARKDOWN_CITATION_REGEX, CitationTag, (match: string) => {
-      const citationIndex = parseInt(match[1], 10)
-      const citationSource = !isNil(citationIndex)
-        ? messageAttachments?.[citationIndex - 1]
-        : undefined
-      const citationType = citationSource?.type
-      const showcitation = citationSource && !isNil(citationIndex)
-      return {
-        citationIndex,
-        showcitation,
-        citationType,
-        citationSource
+    findMatches(
+      MARKDOWN_CITATION_REGEX,
+      CitationTag,
+      (match: RegExpExecArray) => {
+        const citationIndex = parseInt(match[1], 10)
+        const citationSource = !isNil(citationIndex)
+          ? messageAttachments?.[citationIndex - 1]
+          : undefined
+        const citationType = citationSource?.type
+        const showcitation = citationSource && !isNil(citationIndex)
+        return {
+          citationIndex,
+          showcitation,
+          citationType,
+          citationSource
+        }
       }
-    })
-    processMatches(MARKDOWN_SOURCE_REGEX, SourceTag, (match: string) => {
+    )
+
+    findMatches(MARKDOWN_SOURCE_REGEX, SourceTag, (match: RegExpExecArray) => {
       const sourceId = match[1]
       const className = headline ? 'text-[1rem] font-semibold' : undefined
       return { sourceId, className }
     })
-    processMatches(MARKDOWN_FILE_REGEX, FileTag, (match: string) => {
+
+    findMatches(MARKDOWN_FILE_REGEX, FileTag, (match: RegExpExecArray) => {
       const encodedFilepath = match[1]
       try {
         return {
           encodedFilepath,
           openInEditor
         }
-      } catch (e) {}
+      } catch (e) {
+        return {}
+      }
     })
 
-    processMatches(
-      MARKDOWN_SYMBOL_REGEX,
-      SymbolTag,
+    findMatches(MARKDOWN_SYMBOL_REGEX, SymbolTag, (match: RegExpExecArray) => {
+      const fullMatch = match[1]
+      return {
+        encodedSymbol: fullMatch,
+        openInEditor
+      }
+    })
+
+    findMatches(
+      MARKDOWN_COMMAND_REGEX,
+      ContextCommandTag,
       (match: RegExpExecArray) => {
         const fullMatch = match[1]
         return {
-          encodedSymbol: fullMatch,
-          openInEditor
+          encodedCommand: fullMatch
         }
       }
     )
 
-    addTextNode(text.slice(lastIndex))
+    allMatches.sort((a, b) => a.match.index - b.match.index)
+
+    for (const { match, Component, getProps } of allMatches) {
+      if (match.index >= lastIndex) {
+        if (match.index > lastIndex) {
+          elements.push(text.slice(lastIndex, match.index))
+        }
+
+        elements.push(<Component key={match.index} {...getProps(match)} />)
+
+        lastIndex = match.index + match[0].length
+      }
+    }
+
+    if (lastIndex < text.length) {
+      elements.push(text.slice(lastIndex))
+    }
 
     return elements
   }
@@ -210,7 +251,7 @@ export function MessageMarkdown({
     if (!onLookupSymbol) return
     if (symbolPositionMap.has(keyword)) return
 
-    setSymbolLocationMap(map => new Map(map.set(keyword, undefined)))
+    setSymbolLocationMap(map => new Map(map.set(keyword, null)))
     const hints: LookupSymbolHint[] = []
 
     attachmentClientCode?.forEach(item => {
@@ -240,8 +281,7 @@ export function MessageMarkdown({
         onCopyContent,
         onApplyInEditor,
         onCodeCitationClick: rest.onCodeCitationClick,
-        onCodeCitationMouseEnter: rest.onCodeCitationMouseEnter,
-        onCodeCitationMouseLeave: rest.onCodeCitationMouseLeave,
+        onLinkClick: rest.onLinkClick,
         contextInfo,
         fetchingContextInfo: !!fetchingContextInfo,
         canWrapLongLines: !!canWrapLongLines,
@@ -249,7 +289,8 @@ export function MessageMarkdown({
         activeSelection,
         symbolPositionMap,
         lookupSymbol: onLookupSymbol ? lookupSymbol : undefined,
-        openInEditor
+        openInEditor,
+        runShell
       }}
     >
       <MemoizedReactMarkdown
@@ -264,11 +305,15 @@ export function MessageMarkdown({
         components={{
           p({ children }) {
             return (
-              // FIXME
               <p className="mb-2 last:mb-0">
                 {children.map((child, index) =>
                   typeof child === 'string' ? (
-                    processMessagePlaceholder(child)
+                    child.split('\n').map((line, i) => (
+                      <Fragment key={i}>
+                        {i > 0 && <br />}
+                        {processMessagePlaceholder(line)}
+                      </Fragment>
+                    ))
                   ) : (
                     <span key={index}>{child}</span>
                   )
@@ -508,6 +553,37 @@ function SymbolTag({
   )
 }
 
+function ContextCommandTag({
+  encodedCommand,
+  className
+}: {
+  encodedCommand: string | undefined
+  className?: string
+  openInEditor?: MessageMarkdownProps['openInEditor']
+}) {
+  const command = useMemo(() => {
+    if (!encodedCommand) return null
+    try {
+      const decodedCommand = decodeURIComponent(encodedCommand)
+      return JSON.parse(decodedCommand) as string
+    } catch (e) {
+      return null
+    }
+  }, [encodedCommand])
+
+  return (
+    <span
+      className={cn(
+        'symbol space-x-1 whitespace-nowrap border bg-muted py-0.5 align-middle leading-5',
+        className
+      )}
+    >
+      <FileBox className="relative inline-block h-3.5 w-3.5" />
+      <span className="font-medium">{command}</span>
+    </span>
+  )
+}
+
 function RelevantDocumentBadge({
   relevantDocument,
   citationIndex
@@ -515,18 +591,35 @@ function RelevantDocumentBadge({
   relevantDocument: AttachmentDocItem
   citationIndex: number
 }) {
+  const { onLinkClick } = useContext(MessageMarkdownContext)
+  const link = isAttachmentCommitDoc(relevantDocument)
+    ? undefined
+    : relevantDocument.link
+
   return (
     <HoverCard openDelay={100} closeDelay={100}>
       <HoverCardTrigger>
         <span
-          className="relative -top-2 mr-0.5 inline-block h-4 w-4 cursor-pointer rounded-full bg-muted text-center text-xs font-medium"
-          onClick={() => window.open(relevantDocument.link)}
+          className={cn(
+            'relative -top-2 mr-0.5 inline-block h-4 w-4 rounded-full bg-muted text-center text-xs font-medium',
+            {
+              'cursor-pointer': !!link
+            }
+          )}
+          onClick={() => {
+            if (link) {
+              onLinkClick?.(link)
+            }
+          }}
         >
           {citationIndex}
         </span>
       </HoverCardTrigger>
-      <HoverCardContent className="w-96 bg-background text-sm text-foreground dark:border-muted-foreground/60">
-        <DocDetailView relevantDocument={relevantDocument} />
+      <HoverCardContent className="w-[70vw] bg-background text-sm text-foreground dark:border-muted-foreground/60 sm:w-96">
+        <DocDetailView
+          relevantDocument={relevantDocument}
+          onLinkClick={onLinkClick}
+        />
       </HoverCardContent>
     </HoverCard>
   )
@@ -539,11 +632,7 @@ function RelevantCodeBadge({
   relevantCode: AttachmentCodeItem
   citationIndex: number
 }) {
-  const {
-    onCodeCitationClick,
-    onCodeCitationMouseEnter,
-    onCodeCitationMouseLeave
-  } = useContext(MessageMarkdownContext)
+  const { onCodeCitationClick } = useContext(MessageMarkdownContext)
 
   const context: RelevantCodeContext = useMemo(() => {
     return {
@@ -551,7 +640,7 @@ function RelevantCodeBadge({
       range: getRangeFromAttachmentCode(relevantCode),
       filepath: relevantCode.filepath || '',
       content: relevantCode.content,
-      git_url: ''
+      gitUrl: ''
     }
   }, [relevantCode])
 
@@ -588,29 +677,26 @@ function RelevantCodeBadge({
           onClick={() => {
             onCodeCitationClick?.(relevantCode)
           }}
-          onMouseEnter={() => {
-            onCodeCitationMouseEnter?.(citationIndex)
-          }}
-          onMouseLeave={() => {
-            onCodeCitationMouseLeave?.(citationIndex)
-          }}
         >
           {citationIndex}
         </span>
       </HoverCardTrigger>
       <HoverCardContent
-        className="max-w-[90vw] overflow-x-hidden bg-background py-2 text-sm text-foreground dark:border-muted-foreground/60 md:py-4 lg:w-96"
+        className="w-[70vw] overflow-x-hidden bg-background py-2 text-sm text-foreground dark:border-muted-foreground/60 sm:w-auto sm:max-w-[90vw] md:py-4 lg:w-96"
         collisionPadding={8}
       >
         <div
           className="cursor-pointer space-y-2 hover:opacity-70"
           onClick={() => onCodeCitationClick?.(relevantCode)}
         >
-          <div className="truncate whitespace-nowrap font-medium">
-            <span>{fileName}</span>
-            {rangeText ? (
-              <span className="text-muted-foreground">:{rangeText}</span>
-            ) : null}
+          <div className="flex items-center gap-1 overflow-hidden font-medium">
+            <IconFileText className="shrink-0" />
+            <span className="flex-1 truncate">
+              <span>{fileName}</span>
+              {rangeText ? (
+                <span className="text-muted-foreground">:{rangeText}</span>
+              ) : null}
+            </span>
           </div>
           {!!path && (
             <div className="break-all text-xs text-muted-foreground">

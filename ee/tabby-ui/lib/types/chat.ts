@@ -3,10 +3,14 @@ import type { components } from 'tabby-openapi'
 
 import {
   ContextSourceKind,
+  CreatePageRunSubscription,
   CreateThreadRunSubscription,
-  MessageAttachmentCode,
+  Maybe,
+  MessageAttachmentClientCode,
+  MessageAttachmentCodeFileList,
   MessageCodeSearchHit,
-  MessageDocSearchHit
+  MessageDocSearchHit,
+  ThreadAssistantMessageReadingCode
 } from '../gql/generates/graphql'
 import { ArrayElementType } from './common'
 
@@ -51,7 +55,7 @@ export type Context = FileContext
 
 export interface UserMessage {
   id: string
-  message: string
+  content: string
 
   // Client side context - displayed in user message
   selectContext?: Context
@@ -61,6 +65,8 @@ export interface UserMessage {
 
   // Client side active selection context - displayed in assistant message
   activeContext?: Context
+
+  // codeSourceId?: string
 }
 
 export type UserMessageWithOptionalId = Omit<UserMessage, 'id'> & {
@@ -69,9 +75,19 @@ export type UserMessageWithOptionalId = Omit<UserMessage, 'id'> & {
 
 export interface AssistantMessage {
   id: string
-  message: string
+  content: string
   error?: string
-  relevant_code?: MessageAttachmentCode[]
+  attachment?: {
+    clientCode?: Maybe<Array<MessageAttachmentClientCode>> | undefined
+    code: Maybe<Array<AttachmentCodeItem>> | undefined
+    doc: Maybe<Array<AttachmentDocItem>> | undefined
+    codeFileList?: Maybe<MessageAttachmentCodeFileList>
+  }
+  readingCode?: ThreadAssistantMessageReadingCode
+  isReadingCode?: boolean
+  isReadingFileList?: boolean
+  isReadingDocs?: boolean
+  codeSourceId?: Maybe<string>
 }
 
 export interface QuestionAnswerPair {
@@ -95,7 +111,7 @@ export type ISearchHit = {
     body?: string
     name?: string
     filepath?: string
-    git_url?: string
+    gitUrl?: string
     kind?: string
     language?: string
   }
@@ -116,11 +132,11 @@ type MergeUnionType<T> = {
   [k in Keys<T>]?: Pick<T, k>
 }
 
-export type ThreadRunContexts = {
+export interface ThreadRunContexts {
   modelName?: string
   searchPublic?: boolean
   docSourceIds?: string[]
-  codeSourceIds?: string[]
+  codeSourceId?: string
 }
 
 export interface RelevantCodeContext extends Context {
@@ -136,6 +152,13 @@ type ExtractHitsByType<T, N> = T extends {
   ? H
   : never
 
+type ExtractDocByType<T, N> = T extends {
+  __typename: N
+  doc: infer H
+}
+  ? H
+  : never
+
 export type ThreadAssistantMessageAttachmentCodeHits = ExtractHitsByType<
   CreateThreadRunSubscription['createThreadRun'],
   'ThreadAssistantMessageAttachmentsCode'
@@ -145,19 +168,30 @@ export type ThreadAssistantMessageAttachmentDocHits = ExtractHitsByType<
   'ThreadAssistantMessageAttachmentsDoc'
 >
 
+export type PageSectionAttachmentDocHits = ExtractDocByType<
+  CreatePageRunSubscription['createPageRun'],
+  'PageSectionAttachmentDoc'
+>
+
 // for rendering, including scores
-export type AttachmentCodeItem =
-  ArrayElementType<ThreadAssistantMessageAttachmentCodeHits>['code'] & {
-    isClient?: boolean
-    extra?: { scores?: MessageCodeSearchHit['scores'] }
-    baseDir?: string
-  }
+export type AttachmentCodeItem = Omit<
+  ArrayElementType<ThreadAssistantMessageAttachmentCodeHits>['code'],
+  '__typename'
+> & {
+  isClient?: boolean
+  extra?: { scores?: MessageCodeSearchHit['scores'] }
+  baseDir?: string
+  __typename?: 'MessageAttachmentCode' | 'AttachmentCode'
+}
 
 // for rendering, including score
 export type AttachmentDocItem =
-  ArrayElementType<ThreadAssistantMessageAttachmentDocHits>['doc'] & {
-    extra?: { score?: MessageDocSearchHit['score'] }
-  }
+  | (ArrayElementType<ThreadAssistantMessageAttachmentDocHits>['doc'] & {
+      extra?: { score?: MessageDocSearchHit['score'] }
+    })
+  | (ArrayElementType<PageSectionAttachmentDocHits>['doc'] & {
+      extra?: { score?: MessageDocSearchHit['score'] }
+    })
 
 export type MentionAttributes = {
   id: string

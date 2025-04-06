@@ -2,14 +2,19 @@
 
 import { ReactNode, useContext, useMemo } from 'react'
 import { Maybe } from 'graphql/jsutils/Maybe'
-import { isNil } from 'lodash-es'
 
 import {
   ContextSource,
+  MessageAttachmentCodeFileList,
   ThreadAssistantMessageReadingCode
 } from '@/lib/gql/generates/graphql'
 import { AttachmentDocItem, RelevantCodeContext } from '@/lib/types'
-import { cn, isCodeSourceContext, resolveFileNameForDisplay } from '@/lib/utils'
+import {
+  cn,
+  isAttachmentCommitDoc,
+  isCodeSourceContext,
+  resolveFileNameForDisplay
+} from '@/lib/utils'
 import {
   Accordion,
   AccordionContent,
@@ -25,14 +30,27 @@ import {
   IconCheckCircled,
   IconCircleDot,
   IconCode,
+  IconFileText,
+  IconGitCommit,
   IconGitMerge,
-  IconGitPullRequest
+  IconGitPullRequest,
+  IconListTree
 } from '@/components/ui/icons'
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger
+} from '@/components/ui/sheet'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger
 } from '@/components/ui/tooltip'
+import { CodeRangeLabel } from '@/components/code-range-label'
 import { DocDetailView } from '@/components/message-markdown/doc-detail-view'
 import { SourceIcon } from '@/components/source-icon'
 
@@ -49,15 +67,17 @@ interface ReadingCodeStepperProps {
   className?: string
   serverCodeContexts: RelevantCodeContext[]
   clientCodeContexts: RelevantCodeContext[]
-  webResources?: Maybe<AttachmentDocItem[]> | undefined
+  docs?: Maybe<AttachmentDocItem[]> | undefined
   docQueryResources: Omit<ContextSource, 'id'>[] | undefined
   onContextClick?: (
     context: RelevantCodeContext,
     isInWorkspace?: boolean
   ) => void
+  codeFileList?: Maybe<MessageAttachmentCodeFileList>
 }
 
 export function ReadingCodeStepper({
+  docQuery,
   isReadingCode,
   isReadingFileList,
   isReadingDocs,
@@ -65,15 +85,16 @@ export function ReadingCodeStepper({
   codeSourceId,
   serverCodeContexts,
   clientCodeContexts,
-  webResources,
-  docQuery,
+  docs,
+  codeFileList,
   onContextClick
 }: ReadingCodeStepperProps) {
   const { contextInfo, enableDeveloperMode } = useContext(SearchContext)
   const totalContextLength =
     (clientCodeContexts?.length || 0) +
     serverCodeContexts.length +
-    (webResources?.length || 0)
+    (docs?.length || 0)
+
   const targetRepo = useMemo(() => {
     if (!codeSourceId) return undefined
 
@@ -84,7 +105,7 @@ export function ReadingCodeStepper({
   }, [codeSourceId, contextInfo])
 
   const steps = useMemo(() => {
-    let result: Array<'fileList' | 'snippet' | 'docs'> = []
+    let result: Array<'fileList' | 'snippet' | 'docs' | 'commits'> = []
     if (readingCode?.fileList) {
       result.push('fileList')
     }
@@ -95,7 +116,7 @@ export function ReadingCodeStepper({
       result.push('docs')
     }
     return result
-  }, [readingCode?.fileList, readingCode?.snippet])
+  }, [readingCode?.fileList, readingCode?.snippet, docQuery])
 
   const lastItem = useMemo(() => {
     return steps.slice().pop()
@@ -136,17 +157,49 @@ export function ReadingCodeStepper({
                 title="Read codebase structure ..."
                 isLoading={isReadingFileList}
                 isLastItem={lastItem === 'fileList'}
-              />
+                defaultOpen={!!codeFileList?.fileList?.length}
+              >
+                {codeFileList?.fileList?.length ? (
+                  <Sheet>
+                    <SheetTrigger>
+                      <div className="mb-3 mt-2 flex cursor-pointer flex-nowrap items-center gap-0.5 rounded-md bg-muted px-1.5 py-0.5 text-xs font-semibold hover:text-foreground">
+                        <IconListTree className="h-3 w-3" />
+                        <span>{codeFileList.fileList.length} items</span>
+                      </div>
+                    </SheetTrigger>
+                    <SheetContent className="flex w-[50vw] min-w-[300px] flex-col gap-0 px-4 pb-0">
+                      <SheetHeader className="border-b">
+                        <SheetTitle>
+                          {codeFileList.fileList.length} items
+                        </SheetTitle>
+                        <SheetClose />
+                      </SheetHeader>
+                      <pre className="flex-1 overflow-auto py-3">
+                        {codeFileList.fileList.join('\n')}
+                      </pre>
+                      {codeFileList.truncated && (
+                        <SheetFooter className="!justify-start border-t py-3 font-medium">
+                          File list truncated. (Maximum number of items has been
+                          reached)
+                        </SheetFooter>
+                      )}
+                    </SheetContent>
+                  </Sheet>
+                ) : null}
+              </StepItem>
             )}
             {readingCode?.snippet && (
               <StepItem
                 key="snippet"
                 title="Search for relevant code snippets ..."
                 isLoading={isReadingCode}
-                defaultOpen={!isReadingCode}
+                defaultOpen={
+                  !!clientCodeContexts?.length || !!serverCodeContexts?.length
+                }
                 isLastItem={lastItem === 'snippet'}
               >
-                {!!totalContextLength && (
+                {(!!clientCodeContexts?.length ||
+                  !!serverCodeContexts?.length) && (
                   <div className="mb-3 mt-2">
                     <div className="flex flex-wrap gap-2 text-xs font-semibold">
                       {clientCodeContexts?.map((item, index) => {
@@ -177,16 +230,19 @@ export function ReadingCodeStepper({
             )}
             {docQuery && (
               <StepItem
-                title="Search for relevant Issues/PRs ..."
+                key="docs"
+                title="Collect documents ..."
                 isLastItem={lastItem === 'docs'}
                 isLoading={isReadingDocs}
+                defaultOpen={!!docs?.length}
               >
-                {!!webResources?.length && (
+                {!!docs?.length && (
                   <div className="mb-3 mt-2 space-y-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                      {webResources?.map((x, index) => {
+                      {docs?.map((x, index) => {
+                        const _key = isAttachmentCommitDoc(x) ? x.sha : x.link
                         return (
-                          <div key={`${x.link}_${index}`}>
+                          <div key={`${_key}_${index}`}>
                             <HoverCard openDelay={100} closeDelay={100}>
                               <HoverCardTrigger>
                                 <CodebaseDocView doc={x} />
@@ -195,6 +251,9 @@ export function ReadingCodeStepper({
                                 <DocDetailView
                                   enableDeveloperMode={enableDeveloperMode}
                                   relevantDocument={x}
+                                  onLinkClick={url => {
+                                    window.open(url)
+                                  }}
                                 />
                               </HoverCardContent>
                             </HoverCard>
@@ -226,30 +285,12 @@ function CodeContextItem({
   onContextClick,
   enableDeveloperMode
 }: CodeContextItemProps) {
-  const isMultiLine =
-    context.range &&
-    !isNil(context.range?.start) &&
-    !isNil(context.range?.end) &&
-    context.range.start < context.range.end
   const pathSegments = context.filepath.split('/')
   const path = pathSegments.slice(0, pathSegments.length - 1).join('/')
 
   const fileName = useMemo(() => {
     return resolveFileNameForDisplay(context.filepath)
   }, [context.filepath])
-
-  const rangeText = useMemo(() => {
-    if (!context.range) return undefined
-
-    let text = ''
-    if (context.range.start) {
-      text = String(context.range.start)
-    }
-    if (isMultiLine) {
-      text += `-${context.range.end}`
-    }
-    return text
-  }, [context.range])
 
   const scores = context?.extra?.scores
 
@@ -258,7 +299,7 @@ function CodeContextItem({
       <TooltipTrigger asChild>
         <div
           className={cn(
-            'group whitespace-nowrap rounded-md bg-muted px-1.5 py-0.5',
+            'group flex flex-nowrap items-center gap-0.5 rounded-md bg-muted px-1.5 py-0.5',
             {
               'cursor-pointer hover:text-foreground': clickable
             }
@@ -269,27 +310,29 @@ function CodeContextItem({
             }
           }}
         >
-          <span>{fileName}</span>
-          {rangeText ? (
-            <span
+          <IconFileText className="h-3 w-3" />
+          <span>
+            <span>{fileName}</span>
+            <CodeRangeLabel
               className={cn('font-normal text-muted-foreground', {
                 'group-hover:text-foreground': clickable
               })}
-            >
-              :{rangeText}
-            </span>
-          ) : null}
+              range={context.range}
+            ></CodeRangeLabel>
+          </span>
         </div>
       </TooltipTrigger>
       <TooltipContent align="start" sideOffset={8} className="max-w-[24rem]">
         <div className="space-y-2">
           <div className="whitespace-nowrap font-medium">
             <span>{fileName}</span>
-            {rangeText ? (
-              <span className="text-muted-foreground">:{rangeText}</span>
-            ) : null}
+            <CodeRangeLabel range={context.range} />
           </div>
-          <div className="break-all text-xs text-muted-foreground">{path}</div>
+          {!!path && (
+            <div className="break-all text-xs text-muted-foreground">
+              {path}
+            </div>
+          )}
           {enableDeveloperMode && context?.extra?.scores && (
             <div className="mt-4">
               <div className="mb-1 font-semibold">Scores</div>
@@ -315,11 +358,22 @@ function CodeContextItem({
   )
 }
 
-// Issue or PR
+// Issue, PR, Commit
 function CodebaseDocView({ doc }: { doc: AttachmentDocItem }) {
-  const docName = `#${doc.link.split('/').pop()}`
-  const isIssue = doc.__typename === 'MessageAttachmentIssueDoc'
-  const isPR = doc.__typename === 'MessageAttachmentPullDoc'
+  const isIssue =
+    doc.__typename === 'MessageAttachmentIssueDoc' ||
+    doc.__typename === 'AttachmentIssueDoc'
+  const isPR =
+    doc.__typename === 'MessageAttachmentPullDoc' ||
+    doc.__typename === 'AttachmentPullDoc'
+  const isCommit =
+    doc.__typename === 'MessageAttachmentCommitDoc' ||
+    doc.__typename === 'AttachmentCommitDoc'
+
+  const docName = isCommit
+    ? `${doc.sha.slice(0, 7)}`
+    : `#${doc.link.split('/').pop()}`
+  const link = isCommit ? undefined : doc.link
 
   let icon: ReactNode = null
   if (isIssue) {
@@ -329,7 +383,6 @@ function CodebaseDocView({ doc }: { doc: AttachmentDocItem }) {
       <IconCircleDot className="h-3 w-3" />
     )
   }
-
   if (isPR) {
     icon = doc.merged ? (
       <IconGitMerge className="h-3 w-3" />
@@ -337,11 +390,23 @@ function CodebaseDocView({ doc }: { doc: AttachmentDocItem }) {
       <IconGitPullRequest className="h-3 w-3" />
     )
   }
+  if (isCommit) {
+    icon = <IconGitCommit className="h-3 w-3" />
+  }
 
   return (
     <div
-      className="flex cursor-pointer flex-nowrap items-center gap-0.5 rounded-md bg-muted px-1.5 py-0.5 font-semibold hover:text-foreground"
-      onClick={() => window.open(doc.link)}
+      className={cn(
+        'flex flex-nowrap items-center gap-0.5 rounded-md bg-muted px-1.5 py-0.5 font-semibold hover:text-foreground',
+        {
+          'cursor-pointer': !!link
+        }
+      )}
+      onClick={() => {
+        if (link) {
+          window.open(link)
+        }
+      }}
     >
       {icon}
       <span>{docName}</span>

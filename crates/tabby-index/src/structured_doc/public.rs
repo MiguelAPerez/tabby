@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Result;
 use async_stream::stream;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
@@ -7,9 +8,10 @@ use tabby_common::index::{corpus, structured_doc::fields as StructuredDocIndexFi
 use tabby_inference::Embedding;
 
 pub use super::types::{
+    commit::CommitDocument as StructuredDocCommitFields,
     issue::IssueDocument as StructuredDocIssueFields,
     pull::PullDocument as StructuredDocPullDocumentFields,
-    web::WebDocument as StructuredDocWebFields, StructuredDoc, StructuredDocFields,
+    web::WebDocument as StructuredDocWebFields, StructuredDoc, StructuredDocFields, KIND_COMMIT,
 };
 use super::{create_structured_doc_builder, types::BuildStructuredDoc};
 use crate::{indexer::TantivyDocBuilder, Indexer};
@@ -68,7 +70,7 @@ impl StructuredDocIndexer {
     // If the document is marked as deleted, it will be removed.
     // Next, the document is rebuilt, the original is deleted, and the newly indexed document is added.
     pub async fn sync(&self, document: StructuredDoc) -> bool {
-        if !self.require_updates(&document) {
+        if !self.require_updates(&document).await {
             return false;
         }
 
@@ -94,17 +96,47 @@ impl StructuredDocIndexer {
         }
     }
 
+    pub async fn count_doc(&self, source_id: &str, kind: &str) -> Result<usize> {
+        let attributes = vec![(StructuredDocIndexFields::KIND, kind)];
+        self.indexer
+            .count_doc_by_attribute(source_id, &attributes)
+            .await
+    }
+
+    pub async fn list_latest_ids(
+        &self,
+        source_id: &str,
+        kind: &str,
+        datetime_field: &str,
+        offset: usize,
+    ) -> Result<Vec<String>> {
+        self.indexer
+            .list_latest_ids(
+                source_id,
+                &vec![(StructuredDocIndexFields::KIND, kind)],
+                datetime_field,
+                offset,
+            )
+            .await
+    }
+
     pub fn commit(self) {
         self.indexer.commit();
     }
 
-    fn require_updates(&self, document: &StructuredDoc) -> bool {
+    async fn require_updates(&self, document: &StructuredDoc) -> bool {
         if document.should_skip() {
             return false;
         }
 
         if self.should_backfill(document) {
             return true;
+        }
+
+        if let StructuredDocFields::Commit(_commit) = &document.fields {
+            if self.indexer.get_doc(document.id()).await.is_ok() {
+                return false;
+            }
         }
 
         true

@@ -11,8 +11,9 @@ import java.util.concurrent.CompletableFuture;
 import org.eclipse.core.runtime.FileLocator;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
-import org.eclipse.jface.resource.ColorRegistry;
-import org.eclipse.jface.resource.FontRegistry;
+import org.eclipse.jface.action.Action;
+import org.eclipse.jface.action.IToolBarManager;
+import org.eclipse.jface.resource.ImageDescriptor;
 import org.eclipse.jface.text.ITextSelection;
 import org.eclipse.jface.viewers.ISelection;
 import org.eclipse.swt.SWT;
@@ -25,17 +26,19 @@ import org.eclipse.swt.graphics.FontData;
 import org.eclipse.swt.graphics.RGB;
 import org.eclipse.swt.layout.FillLayout;
 import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Display;
 import org.eclipse.ui.ISelectionListener;
 import org.eclipse.ui.IWorkbenchPart;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.part.ViewPart;
-import org.eclipse.ui.themes.ITheme;
+import org.eclipse.ui.themes.ColorUtil;
 import org.osgi.framework.Bundle;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.tabbyml.tabby4eclipse.Activator;
 import com.tabbyml.tabby4eclipse.DebouncedRunnable;
+import com.tabbyml.tabby4eclipse.Images;
 import com.tabbyml.tabby4eclipse.Logger;
 import com.tabbyml.tabby4eclipse.StringUtils;
 import com.tabbyml.tabby4eclipse.Utils;
@@ -50,6 +53,7 @@ import com.tabbyml.tabby4eclipse.lsp.protocol.IStatusService;
 import com.tabbyml.tabby4eclipse.lsp.protocol.StatusInfo;
 import com.tabbyml.tabby4eclipse.lsp.protocol.StatusRequestParams;
 
+@SuppressWarnings("serial")
 public class ChatView extends ViewPart {
 	private Logger logger = new Logger("ChatView");
 	private Gson gson = new Gson();
@@ -62,16 +66,20 @@ public class ChatView extends ViewPart {
 
 	private boolean isHtmlLoaded = false;
 	private boolean isChatPanelLoaded = false;
+	private String chatPanelApiVersion = null;
 	private Config.ServerConfig currentConfig;
 
 	private List<String> pendingScripts = new ArrayList<>();
 	private Map<String, CompletableFuture<Object>> pendingChatPanelRequest = new HashMap<>();
 
+	private List<Action> toolbarActions = new ArrayList<>();
+
 	private boolean isDark;
+	private RGB browserBgColor;
 	private RGB bgColor;
-	private RGB bgActiveColor;
 	private RGB fgColor;
 	private RGB borderColor;
+	private RGB inputColor;
 	private RGB inputBorderColor;
 	private RGB primaryColor;
 	private RGB primaryFgColor;
@@ -79,16 +87,52 @@ public class ChatView extends ViewPart {
 	private RGB popoverFgColor;
 	private RGB accentColor;
 	private RGB accentFgColor;
+	private RGB ringColor;
 	private String font;
 	private int fontSize = 13;
 
 	@Override
 	public void createPartControl(Composite parent) {
-		setupThemeStyle();
 		parent.setLayout(new FillLayout());
 
+		// Tool bar
+		IToolBarManager toolbarManager = getViewSite().getActionBars().getToolBarManager();
+		Action newChat = new Action("New") {
+			@Override
+			public void run() {
+				chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "navigate", new ArrayList<>() {
+					{
+						add(ChatViewType.NEW_CHAT);
+					}
+				});
+			}
+		};
+		newChat.setImageDescriptor(ImageDescriptor.createFromImage(Images.getIcon(Images.ICON_ADD)));
+		newChat.setToolTipText("Start a new chat.");
+		newChat.setEnabled(false);
+		toolbarManager.add(newChat);
+		toolbarActions.add(newChat);
+
+		Action history = new Action("History") {
+			@Override
+			public void run() {
+				chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "navigate", new ArrayList<>() {
+					{
+						add(ChatViewType.HISTORY);
+					}
+				});
+			}
+		};
+		history.setImageDescriptor(ImageDescriptor.createFromImage(Images.getIcon(Images.ICON_HISTORY)));
+		history.setToolTipText("Show chat history.");
+		newChat.setEnabled(false);
+		toolbarManager.add(history);
+		toolbarActions.add(history);
+
+		// Browser
 		browser = new Browser(parent, Utils.isWindows() ? SWT.EDGE : SWT.WEBKIT);
-		browser.setBackground(new Color(bgActiveColor));
+		setupThemeStyle();
+		browser.setBackground(new Color(browserBgColor));
 		browser.setVisible(false);
 
 		browser.addProgressListener(new ProgressAdapter() {
@@ -106,15 +150,16 @@ public class ChatView extends ViewPart {
 		statusInfoHolder.addStatusDidChangeListener(() -> {
 			reloadContent(false);
 		});
-		
-		PlatformUI.getWorkbench().getActiveWorkbenchWindow().getSelectionService().addSelectionListener(new ISelectionListener() {
-			@Override
-            public void selectionChanged(IWorkbenchPart part, ISelection selection) {
-                if (selection instanceof ITextSelection) {
-                	syncActiveSelectionRunnable.call();
-                }
-            }
-		});
+
+		PlatformUI.getWorkbench().getActiveWorkbenchWindow().getSelectionService()
+				.addSelectionListener(new ISelectionListener() {
+					@Override
+					public void selectionChanged(IWorkbenchPart part, ISelection selection) {
+						if (selection instanceof ITextSelection) {
+							syncActiveSelectionRunnable.call();
+						}
+					}
+				});
 	}
 
 	private DebouncedRunnable syncActiveSelectionRunnable = new DebouncedRunnable(() -> {
@@ -123,7 +168,7 @@ public class ChatView extends ViewPart {
 		}
 		EditorUtils.asyncExec(() -> {
 			try {
-				chatPanelClientInvoke("updateActiveSelection", new ArrayList<>() {
+				chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "updateActiveSelection", new ArrayList<>() {
 					{
 						add(ChatViewUtils.getActiveEditorFileContext());
 					}
@@ -152,7 +197,7 @@ public class ChatView extends ViewPart {
 	}
 
 	public void explainSelectedText() {
-		chatPanelClientInvoke("executeCommand", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "executeCommand", new ArrayList<>() {
 			{
 				add(ChatCommand.EXPLAIN);
 			}
@@ -161,7 +206,7 @@ public class ChatView extends ViewPart {
 
 	public void fixSelectedText() {
 		// FIXME(@icycodes): collect the diagnostic message provided by IDE or LSP
-		chatPanelClientInvoke("executeCommand", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "executeCommand", new ArrayList<>() {
 			{
 				add(ChatCommand.FIX);
 			}
@@ -169,7 +214,7 @@ public class ChatView extends ViewPart {
 	}
 
 	public void generateDocsForSelectedText() {
-		chatPanelClientInvoke("executeCommand", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "executeCommand", new ArrayList<>() {
 			{
 				add(ChatCommand.GENERATE_DOCS);
 			}
@@ -177,7 +222,7 @@ public class ChatView extends ViewPart {
 	}
 
 	public void generateTestsForSelectedText() {
-		chatPanelClientInvoke("executeCommand", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "executeCommand", new ArrayList<>() {
 			{
 				add(ChatCommand.GENERATE_TESTS);
 			}
@@ -185,7 +230,7 @@ public class ChatView extends ViewPart {
 	}
 
 	public void addSelectedTextAsContext() {
-		chatPanelClientInvoke("addRelevantContext", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "addRelevantContext", new ArrayList<>() {
 			{
 				add(ChatViewUtils.getActiveEditorFileContext(RangeStrategy.SELECTION));
 			}
@@ -193,38 +238,41 @@ public class ChatView extends ViewPart {
 	}
 
 	public void addActiveEditorAsContext() {
-		chatPanelClientInvoke("addRelevantContext", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "addRelevantContext", new ArrayList<>() {
 			{
 				add(ChatViewUtils.getActiveEditorFileContext(RangeStrategy.FILE));
 			}
 		});
 	}
 
+	private RGB getColor(int coloirId, RGB defaultColor) {
+		Display display = browser.getDisplay();
+		Color swtColor = display.getSystemColor(coloirId);
+		if (swtColor != null) {
+			return swtColor.getRGB();
+		}
+		return defaultColor;
+	}
+
 	private void setupThemeStyle() {
-		ITheme currentTheme = PlatformUI.getWorkbench().getThemeManager().getCurrentTheme();
-		ColorRegistry colorRegistry = currentTheme.getColorRegistry();
-		bgColor = colorRegistry.getRGB("org.eclipse.ui.workbench.ACTIVE_TAB_BG_START");
+		bgColor = getColor(SWT.COLOR_WIDGET_BACKGROUND, new RGB(32, 32, 32));
 		isDark = (bgColor.red + bgColor.green + bgColor.blue) / 3 < 128;
 
-		bgActiveColor = colorRegistry.getRGB("org.eclipse.ui.workbench.ACTIVE_TAB_BG_END");
-		fgColor = colorRegistry.getRGB("org.eclipse.ui.workbench.ACTIVE_TAB_TEXT_COLOR");
+		browserBgColor = getColor(SWT.COLOR_LIST_BACKGROUND, ColorUtil.blend(bgColor, new RGB(127, 127, 127), 75));
+		fgColor = getColor(SWT.COLOR_LIST_FOREGROUND, isDark ? new RGB(255, 255, 255) : new RGB(0, 0, 0));
 		borderColor = isDark ? new RGB(64, 64, 64) : new RGB(192, 192, 192);
+		inputColor = browserBgColor;
 		inputBorderColor = borderColor;
 
-		primaryColor = colorRegistry.getRGB("org.eclipse.ui.workbench.LINK_COLOR");
-		if (primaryColor == null) {
-			primaryColor = isDark ? new RGB(55, 148, 255) : new RGB(26, 133, 255);
-		}
+		primaryColor = getColor(SWT.COLOR_LINK_FOREGROUND, isDark ? new RGB(55, 148, 255) : new RGB(26, 133, 255));
 		primaryFgColor = new RGB(255, 255, 255);
-		popoverColor = bgActiveColor;
+		popoverColor = browserBgColor;
 		popoverFgColor = fgColor;
-		accentColor = isDark ? new RGB(4, 57, 94)
-				: new RGB((int) (bgActiveColor.red * 0.8), (int) (bgActiveColor.green * 0.8),
-						(int) (bgActiveColor.blue * 0.8));
+		accentColor = isDark ? new RGB(4, 57, 94) : ColorUtil.blend(browserBgColor, new RGB(0, 0, 0), 80);
 		accentFgColor = fgColor;
+		ringColor = primaryColor;
 
-		FontRegistry fontRegistry = currentTheme.getFontRegistry();
-		FontData[] fontData = fontRegistry.getFontData("org.eclipse.jface.textfont");
+		FontData[] fontData = browser.getDisplay().getSystemFont().getFontData();
 		if (fontData.length > 0) {
 			font = fontData[0].getName();
 			fontSize = fontData[0].getHeight();
@@ -233,8 +281,8 @@ public class ChatView extends ViewPart {
 
 	private String buildCss() {
 		String css = "";
-		if (bgActiveColor != null) {
-			css += String.format("background-color: hsl(%s);", StringUtils.toHsl(bgActiveColor));
+		if (browserBgColor != null) {
+			css += String.format("--sidebar-background: %s;", StringUtils.toHsl(browserBgColor));
 		}
 		if (bgColor != null) {
 			css += String.format("--background: %s;", StringUtils.toHsl(bgColor));
@@ -245,8 +293,14 @@ public class ChatView extends ViewPart {
 		if (borderColor != null) {
 			css += String.format("--border: %s;", StringUtils.toHsl(borderColor));
 		}
+		if (inputColor != null) {
+			css += String.format("--input: %s;", StringUtils.toHsl(inputColor));
+		}
 		if (inputBorderColor != null) {
-			css += String.format("--input: %s;", StringUtils.toHsl(inputBorderColor));
+			css += String.format("--input-border: %s;", StringUtils.toHsl(inputBorderColor));
+		}
+		if (ringColor != null) {
+			css += String.format("--ring: %s;", StringUtils.toHsl(ringColor));
 		}
 		if (primaryColor != null) {
 			css += String.format("--primary: %s;", StringUtils.toHsl(primaryColor));
@@ -286,6 +340,20 @@ public class ChatView extends ViewPart {
 	}
 
 	private void injectFunctions() {
+		browserFunctions.add(new BrowserFunction(browser, "tabbyChatPanelHandleChatPanelClientCreated") {
+			@Override
+			public Object function(Object[] arguments) {
+				List<Object> params = parseArguments(arguments);
+				logger.debug("chatPanelClientCreated: " + params);
+				if (params.size() < 1) {
+					return null;
+				}
+				initChatPanel((String) params.get(0));
+				setToolbarItemsEnabled(true);
+				return null;
+			}
+		});
+
 		browserFunctions.add(new BrowserFunction(browser, "handleTabbyChatPanelResponse") {
 			@Override
 			public Object function(Object[] arguments) {
@@ -344,28 +412,6 @@ public class ChatView extends ViewPart {
 			}
 		});
 
-		browserFunctions.add(new BrowserFunction(browser, "tabbyChatPanelOnLoaded") {
-			@Override
-			public Object function(Object[] arguments) {
-				List<Object> params = parseArguments(arguments);
-				logger.debug("tabbyChatPanelOnLoaded: " + params);
-				if (params.size() < 1) {
-					return null;
-				}
-				Map<String, Object> onLoadedParams = (Map<String, Object>) params.get(0);
-				String apiVersion = (String) onLoadedParams.getOrDefault("apiVersion", "");
-				if (!apiVersion.isBlank()) {
-					String error = ChatViewUtils.checkChatPanelApiVersion(apiVersion);
-					if (error != null) {
-						updateContentToMessage(error);
-						return null;
-					}
-				}
-				initChatPanel();
-				return null;
-			}
-		});
-
 		browserFunctions.add(new BrowserFunction(browser, "tabbyChatPanelOnCopy") {
 			@Override
 			public Object function(Object[] arguments) {
@@ -419,7 +465,7 @@ public class ChatView extends ViewPart {
 				return null;
 			}
 		});
-		
+
 		browserFunctions.add(new BrowserFunction(browser, "tabbyChatPanelReadWorkspaceGitRepositories") {
 			@Override
 			public Object function(Object[] arguments) {
@@ -475,14 +521,18 @@ public class ChatView extends ViewPart {
 			return;
 		}
 		if (force) {
-			LanguageServerService.getInstance().getServer().execute((server) -> {
-				IStatusService statusService = ((ILanguageServer) server).getStatusService();
-				StatusRequestParams params = new StatusRequestParams();
-				params.setRecheckConnection(true);
-				return statusService.getStatus(params);
-			}).thenAccept((statusInfo) -> {
-				String status = statusInfo.getStatus();
-				reloadContentForStatus(status, true);
+			reloadContentForStatus(StatusInfo.Status.CONNECTING, false);
+			// delay to make the loading indicator visible for a bit
+			browser.getDisplay().timerExec(500, () -> {
+				LanguageServerService.getInstance().getServer().execute((server) -> {
+					IStatusService statusService = ((ILanguageServer) server).getStatusService();
+					StatusRequestParams params = new StatusRequestParams();
+					params.setRecheckConnection(true);
+					return statusService.getStatus(params);
+				}).thenAccept((statusInfo) -> {
+					String status = statusInfo.getStatus();
+					reloadContentForStatus(status, true);
+				});
 			});
 		} else {
 			String status = statusInfoHolder.getStatusInfo().getStatus();
@@ -526,11 +576,18 @@ public class ChatView extends ViewPart {
 	private void updateContentToMessage(String message) {
 		showMessage(message);
 		showChatPanel(false);
+		setToolbarItemsEnabled(false);
 	}
 
 	private void updateContentToChatPanel() {
 		showMessage(null);
 		showChatPanel(true);
+	}
+
+	private void setToolbarItemsEnabled(Boolean enabled) {
+		toolbarActions.forEach((action) -> {
+			action.setEnabled(enabled);
+		});
 	}
 
 	// execute js functions
@@ -571,8 +628,9 @@ public class ChatView extends ViewPart {
 		browser.setVisible(true);
 	}
 
-	private void initChatPanel() {
+	private void initChatPanel(String version) {
 		isChatPanelLoaded = true;
+		chatPanelApiVersion = version;
 		browser.getDisplay().timerExec(100, () -> {
 			updateContentToChatPanel();
 			pendingScripts.forEach((script) -> {
@@ -580,7 +638,7 @@ public class ChatView extends ViewPart {
 			});
 			pendingScripts.clear();
 		});
-		chatPanelClientInvoke("init", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "init", new ArrayList<>() {
 			{
 				add(new HashMap<>() {
 					{
@@ -593,7 +651,7 @@ public class ChatView extends ViewPart {
 				});
 			}
 		});
-		chatPanelClientInvoke("updateTheme", new ArrayList<>() {
+		chatPanelClientInvoke(ChatViewUtils.API_0_8_0, "updateTheme", new ArrayList<>() {
 			{
 				add(buildCss());
 				add(isDark ? "dark" : "light");
@@ -619,36 +677,43 @@ public class ChatView extends ViewPart {
 	private void createChatPanelClient() {
 		String script = String.format(
 			String.join("\n",
-				"if (!window.tabbyChatPanelClient) {",
-				"  window.tabbyChatPanelClient = TabbyThreads.createThreadFromIframe(getChatPanel(), {",
-				"    expose: {",
-				"      refresh: %s,",
-				"      onApplyInEditor: %s,",
-				"      onLoaded: %s,",
-				"      onCopy: %s,",
-				"      onKeyboardEvent: %s,",
-				"      openInEditor: %s,",
-				"      openExternal: %s,",
-				"      readWorkspaceGitRepositories: %s,",
-				"      getActiveEditorSelection: %s,",
-				"    }",
-				"  })",
-				"}"
+				"TabbyChatPanel.createClient(getChatPanel(), {",
+				"  refresh: %s,",
+				"  onApplyInEditor: %s,",
+				"  onCopy: %s,",
+				"  onKeyboardEvent: %s,",
+				"  openInEditor: %s,",
+				"  openExternal: %s,",
+				"  readWorkspaceGitRepositories: %s,",
+				"  getActiveEditorSelection: %s,",
+				"}).then((client) => {",
+				"  window.tabbyChatPanelClient = client;",
+				"  const getVersion = client && client['0.9.0'] && client['0.9.0']['getVersion'];",
+				"  if (getVersion && typeof getVersion === 'function') {",
+				"    return getVersion();",
+				"  } else {",
+				"    return undefined;",
+				"  }",
+				"}).then((version) => {",
+				"  console.log('Tabby Chat Panel API version: ' + version);",
+				"  const callback = %s;",
+				"  callback(version);",
+				"});"
 			),
 			wrapJsFunction("tabbyChatPanelRefresh"),
 			wrapJsFunction("tabbyChatPanelOnApplyInEditor"),
-			wrapJsFunction("tabbyChatPanelOnLoaded"),
 			wrapJsFunction("tabbyChatPanelOnCopy"),
 			wrapJsFunction("tabbyChatPanelOnKeyboardEvent"),
 			wrapJsFunction("tabbyChatPanelOpenInEditor"),
 			wrapJsFunction("tabbyChatPanelOpenExternal"),
 			wrapJsFunction("tabbyChatPanelReadWorkspaceGitRepositories"),
-			wrapJsFunction("tabbyChatPanelGetActiveEditorSelection")
+			wrapJsFunction("tabbyChatPanelGetActiveEditorSelection"),
+			wrapJsFunction("tabbyChatPanelHandleChatPanelClientCreated")
 		);
 		executeScript(script);
 	}
 
-	private CompletableFuture<Object> chatPanelClientInvoke(String method, List<Object> params) {
+	private CompletableFuture<Object> chatPanelClientInvoke(String version, String method, List<Object> params) {
 		CompletableFuture<Object> future = new CompletableFuture<>();
 		String uuid = UUID.randomUUID().toString();
 		pendingChatPanelRequest.put(uuid, future);
@@ -657,28 +722,36 @@ public class ChatView extends ViewPart {
 		String script = String.format(
 			String.join("\n",
 				"(function() {",
-				"  const func = window.tabbyChatPanelClient['%s']",
-				"  if (func && typeof func === 'function') {",
-				"    const params = JSON.parse('%s')",
-				"    const resultPromise = func(...params)",
-				"    if (resultPromise && typeof resultPromise.then === 'function') {",
-				"      resultPromise.then(result => {",
-				"        const results = JSON.stringify(['%s', null, result])",
+				"  const client = window.tabbyChatPanelClient;",
+				"  if (client && typeof client === 'object') {",
+				"    const func = client['%s'] && client['%s']['%s']",
+				"    if (func && typeof func === 'function') {",
+				"      const params = JSON.parse('%s')",
+				"      const resultPromise = func(...params)",
+				"      if (resultPromise && typeof resultPromise.then === 'function') {",
+				"        resultPromise.then(result => {",
+				"          const results = JSON.stringify(['%s', null, result])",
+				"          %s",
+				"        }).catch(error => {",
+				"          const results = JSON.stringify(['%s', error.message, null])",
+				"          %s",
+				"        })",
+				"      } else {",
+				"        const results = JSON.stringify(['%s', null, resultPromise])",
 				"        %s",
-				"      }).catch(error => {",
-				"        const results = JSON.stringify(['%s', error.message, null])",
-				"        %s",
-				"      })",
+				"      }",
 				"    } else {",
-				"      const results = JSON.stringify(['%s', null, resultPromise])",
+				"      const results = JSON.stringify(['%s', 'Method not found: %s %s', null])",
 				"      %s",
 				"    }",
 				"  } else {",
-				"    const results = JSON.stringify(['%s', 'Method not found: %s', null])",
+				"    const results = JSON.stringify(['%s', 'Tabby chat panel client is not connected.', null])",
 				"    %s",
 				"  }",
-				"})()"
+				"})();"
 			),
+			version,
+			version,
 			method,
 			paramsJson,
 			uuid,
@@ -688,10 +761,13 @@ public class ChatView extends ViewPart {
 			uuid,
 			responseCallbackFunction,
 			uuid,
+			version,
 			method,
+			responseCallbackFunction,
+			uuid,
 			responseCallbackFunction
 		);
-		logger.debug("Request to chat panel: " + uuid + ", " + method + ", " + paramsJson);
+		logger.debug("Request to chat panel: " + uuid + ", " + version + "," + method + ", " + paramsJson);
 		if (isChatPanelLoaded) {
 			executeScript(script);
 		} else {

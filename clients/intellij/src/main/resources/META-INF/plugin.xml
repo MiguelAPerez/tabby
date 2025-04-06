@@ -186,6 +186,11 @@
                     text="Fix"
                     description="Fix the selected code using Tabby chat.">
             </action>
+            <action id="Tabby.Chat.CodeReview"
+                    class="com.tabbyml.intellijtabby.actions.chat.CodeReview"
+                    text="Code Review"
+                    description="Review the selected code using Tabby chat.">
+            </action>
             <action id="Tabby.Chat.GenerateDocs"
                     class="com.tabbyml.intellijtabby.actions.chat.GenerateDocs"
                     text="Generate Docs"
@@ -209,6 +214,21 @@
             <reference id="Tabby.OpenOnlineHelp"/>
         </group>
 
+        <group id="Tabby.ChatToolWindowToolbar">
+            <action id="Tabby.Chat.ShowNewChat"
+                    class="com.tabbyml.intellijtabby.actions.chat.ShowNewChat"
+                    text="New"
+                    icon="AllIcons.General.Add"
+                    description="Start a new chat.">
+            </action>
+            <action id="Tabby.Chat.ShowChatHistory"
+                    class="com.tabbyml.intellijtabby.actions.chat.ShowChatHistory"
+                    text="History"
+                    icon="AllIcons.Vcs.History"
+                    description="Show chat history.">
+            </action>
+        </group>
+
         <action id="Tabby.InlineCompletion.TabAccept"
                 class="com.tabbyml.intellijtabby.actions.inlineCompletion.TabAccept"
                 text="Accept Completion (Tab)"
@@ -221,6 +241,12 @@
                 text="Switch Focus Between Editor and Chat"
                 description="Switch focus between editor and chat, add selected text to chat if any.">
             <keyboard-shortcut first-keystroke="ctrl L" keymap="$default"/>
+        </action>
+
+        <action id="Tabby.GenerateCommitMessage"
+                class="com.tabbyml.intellijtabby.actions.GenerateCommitMessage"
+                text="Generate Commit Message"
+                description="Generate a commit message based on the changes in the current Git repository.">
         </action>
     </actions>
 </idea-plugin>

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -11,6 +12,9 @@ pub struct Attachment {
 #[derive(Serialize, Deserialize)]
 pub struct AttachmentCodeFileList {
     pub file_list: Vec<String>,
+
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -19,6 +23,7 @@ pub enum AttachmentDoc {
     Web(AttachmentWebDoc),
     Issue(AttachmentIssueDoc),
     Pull(AttachmentPullDoc),
+    Commit(AttachmentCommitDoc),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -45,6 +50,14 @@ pub struct AttachmentPullDoc {
     pub body: String,
     pub diff: String,
     pub merged: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AttachmentCommitDoc {
+    pub sha: String,
+    pub message: String,
+    pub author_user_id: Option<String>,
+    pub author_at: DateTime<Utc>,
 }
 
 #[derive(Serialize, Deserialize)]

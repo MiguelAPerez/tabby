@@ -28,7 +28,6 @@ import {
 } from '@/lib/gql/generates/graphql'
 import { useCopyToClipboard } from '@/lib/hooks/use-copy-to-clipboard'
 import { useCurrentTheme } from '@/lib/hooks/use-current-theme'
-import { useDebounceValue } from '@/lib/hooks/use-debounce'
 import { useLatest } from '@/lib/hooks/use-latest'
 import { useMe } from '@/lib/hooks/use-me'
 import { useSelectedModel } from '@/lib/hooks/use-models'
@@ -39,9 +38,10 @@ import { useThreadRun } from '@/lib/hooks/use-thread-run'
 import {
   updatePendingUserMessage,
   updateSelectedModel,
-  updateSelectedRepoSourceId
-} from '@/lib/stores/chat-actions'
-import { useChatStore } from '@/lib/stores/chat-store'
+  updateSelectedRepoSourceId,
+  useChatStore
+} from '@/lib/stores/chat-store'
+import { updatePendingThread } from '@/lib/stores/page-store'
 import { clearHomeScrollPosition } from '@/lib/stores/scroll-store'
 import { useMutation } from '@/lib/tabby/gql'
 import {
@@ -80,12 +80,12 @@ import {
 } from '@/components/ui/tooltip'
 import { ButtonScrollToBottom } from '@/components/button-scroll-to-bottom'
 import { BANNER_HEIGHT, useShowDemoBanner } from '@/components/demo-banner'
+import { DevPanel } from '@/components/dev-panel'
 import LoadingWrapper from '@/components/loading-wrapper'
 import NotFoundPage from '@/components/not-found-page'
 import TextAreaSearch from '@/components/textarea-search'
 
 import { AssistantMessageSection } from './assistant-message-section'
-import { DevPanel } from './dev-panel'
 import { Header } from './header'
 import { MessagesSkeleton } from './messages-skeleton'
 import { SearchContext } from './search-context'
@@ -291,8 +291,7 @@ export function Search() {
   const isLoadingRef = useLatest(isLoading)
 
   const { selectedModel, isFetchingModels, models } = useSelectedModel()
-  const { selectedRepository, isFetchingRepositories, repos } =
-    useSelectedRepository()
+  const { isFetchingRepositories, repos } = useSelectedRepository()
   const currentMessageForDev = useMemo(() => {
     return messages.find(item => item.id === messageIdForDev)
   }, [messageIdForDev, messages])
@@ -311,6 +310,32 @@ export function Search() {
     currentMessageForDev?.attachment?.code,
     currentMessageForDev?.attachment?.doc
   ])
+
+  const qaPairs = useMemo(() => {
+    const pairs: Array<ConversationPair> = []
+    let currentPair: ConversationPair = { question: null, answer: null }
+    messages.forEach(message => {
+      if (message.role === Role.User) {
+        currentPair.question = message
+      } else if (message.role === Role.Assistant) {
+        if (!currentPair.answer) {
+          // Take the first answer
+          currentPair.answer = message
+          pairs.push(currentPair)
+          currentPair = { question: null, answer: null }
+        }
+      }
+    })
+
+    return pairs
+  }, [messages])
+
+  const codeSourceIdInThread = useMemo(() => {
+    return (
+      qaPairs.find(x => !!x.answer?.codeSourceId)?.answer?.codeSourceId ??
+      undefined
+    )
+  }, [qaPairs])
 
   const onPanelLayout = (sizes: number[]) => {
     if (sizes?.[1]) {
@@ -335,7 +360,6 @@ export function Search() {
       initializing.current = true
 
       if (pendingUserMessage?.content) {
-        // setIsReady(true)
         onSubmitSearch(pendingUserMessage.content, pendingUserMessage.context)
         updatePendingUserMessage(undefined)
         return
@@ -430,7 +454,20 @@ export function Search() {
       }
     }
 
-    // FIXME(jueliang) process FileList
+    if (
+      !currentAssistantMessage.attachment?.codeFileList &&
+      answer?.attachmentsFileList?.codeFileList?.length
+    ) {
+      currentAssistantMessage.attachment = {
+        clientCode: null,
+        doc: currentAssistantMessage.attachment?.doc || null,
+        codeFileList: {
+          fileList: answer.attachmentsFileList.codeFileList,
+          truncated: answer.attachmentsFileList.truncated
+        },
+        code: currentAssistantMessage.attachment?.code || null
+      }
+    }
 
     currentAssistantMessage.threadRelevantQuestions = answer?.relevantQuestions
 
@@ -520,7 +557,7 @@ export function Search() {
 
   const onSubmitSearch = (question: string, ctx?: ThreadRunContexts) => {
     const { sourceIdForCodeQuery, sourceIdsForDocQuery, searchPublic } =
-      getSourceInputs(selectedRepository?.sourceId, ctx)
+      getSourceInputs(codeSourceIdInThread, ctx)
 
     const newUserMessageId = tempNanoId()
     const newAssistantMessageId = tempNanoId()
@@ -580,8 +617,7 @@ export function Search() {
     const userMessage = messages[userMessageIndex]
     const assistantMessage = messages[assistantMessageIndex]
 
-    const codeSourceId =
-      assistantMessage?.codeSourceId || selectedRepository?.sourceId
+    const codeSourceId = assistantMessage?.codeSourceId || codeSourceIdInThread
 
     const newUserMessage: ConversationMessage = {
       ...userMessage,
@@ -706,29 +742,16 @@ export function Search() {
     }
   }, [threadData, fetchingThread, threadError, isReady, threadIdFromURL])
 
-  const [isFetchingMessages] = useDebounceValue(
-    fetchingMessages || threadMessages?.threadMessages?.pageInfo?.hasNextPage,
-    200
-  )
-
-  const qaPairs = useMemo(() => {
-    const pairs: Array<ConversationPair> = []
-    let currentPair: ConversationPair = { question: null, answer: null }
-    messages.forEach(message => {
-      if (message.role === Role.User) {
-        currentPair.question = message
-      } else if (message.role === Role.Assistant) {
-        if (!currentPair.answer) {
-          // Take the first answer
-          currentPair.answer = message
-          pairs.push(currentPair)
-          currentPair = { question: null, answer: null }
-        }
-      }
+  const onConvertToPage = () => {
+    if (!threadId) return
+    const content = messages?.[0].content
+    const title = getTitleFromMessages(sources ?? [], content)
+    updatePendingThread({
+      threadId,
+      title
     })
-
-    return pairs
-  }, [messages])
+    router.push('/pages')
+  }
 
   const style = isShowDemoBanner
     ? { height: `calc(100vh - ${BANNER_HEIGHT})` }
@@ -774,6 +797,7 @@ export function Search() {
               threadIdFromURL={threadIdFromURL}
               streamingDone={!isLoading}
               threadId={threadId}
+              onConvertToPage={onConvertToPage}
             />
             <LoadingWrapper
               loading={!isReady}
@@ -916,7 +940,7 @@ export function Search() {
                         fetchingContextInfo={fetchingContextInfo}
                         modelName={selectedModel}
                         onSelectModel={onSelectModel}
-                        repoSourceId={selectedRepository?.sourceId}
+                        repoSourceId={codeSourceIdInThread}
                         onSelectRepo={onSelectedRepo}
                         isInitializingResources={
                           isFetchingModels || isFetchingRepositories
@@ -1006,20 +1030,17 @@ function getSourceInputs(
   repositorySourceId: string | undefined,
   ctx: ThreadRunContexts | undefined
 ) {
-  let sourceIdsForDocQuery: string[] = []
-  let sourceIdForCodeQuery: string | undefined
+  let sourceIdsForDocQuery: string[] = compact([repositorySourceId])
+  let sourceIdForCodeQuery: string | undefined = repositorySourceId
   let searchPublic = false
 
   if (ctx) {
     sourceIdsForDocQuery = uniq(
       // Compatible with existing user messages
-      compact(
-        [repositorySourceId, ctx?.codeSourceIds?.[0]].concat(ctx.docSourceIds)
-      )
+      compact([repositorySourceId, ctx?.codeSourceId].concat(ctx.docSourceIds))
     )
     searchPublic = ctx.searchPublic ?? false
-    sourceIdForCodeQuery =
-      repositorySourceId || ctx.codeSourceIds?.[0] || undefined
+    sourceIdForCodeQuery = repositorySourceId || ctx.codeSourceId || undefined
   }
   return {
     sourceIdsForDocQuery,

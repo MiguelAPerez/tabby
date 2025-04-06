@@ -162,36 +162,6 @@ export const listSecuredUsers = graphql(/* GraphQL */ `
   }
 `)
 
-export const queryDailyStatsInPastYear = graphql(/* GraphQL */ `
-  query DailyStatsInPastYear($users: [ID!]) {
-    dailyStatsInPastYear(users: $users) {
-      start
-      end
-      completions
-      selects
-      views
-    }
-  }
-`)
-
-export const queryDailyStats = graphql(/* GraphQL */ `
-  query DailyStats(
-    $start: DateTime!
-    $end: DateTime!
-    $users: [ID!]
-    $languages: [Language!]
-  ) {
-    dailyStats(start: $start, end: $end, users: $users, languages: $languages) {
-      start
-      end
-      completions
-      selects
-      views
-      language
-    }
-  }
-`)
-
 export const listIntegrations = graphql(/* GraphQL */ `
   query ListIntegrations(
     $ids: [ID!]
@@ -485,9 +455,20 @@ export const listThreadMessages = graphql(/* GraphQL */ `
                 body
                 merged
               }
+              ... on MessageAttachmentCommitDoc {
+                sha
+                message
+                author {
+                  id
+                  email
+                  name
+                }
+                authorAt
+              }
             }
             codeFileList {
               fileList
+              truncated
             }
           }
         }
@@ -589,6 +570,7 @@ export const listPages = graphql(/* GraphQL */ `
           id
           authorId
           title
+          codeSourceId
           content
           createdAt
           updatedAt
@@ -627,6 +609,62 @@ export const listPageSections = graphql(/* GraphQL */ `
           title
           content
           position
+          attachments {
+            code {
+              __typename
+              gitUrl
+              commit
+              filepath
+              language
+              content
+              startLine
+            }
+            codeFileList {
+              __typename
+              fileList
+              truncated
+            }
+            doc {
+              __typename
+              ... on AttachmentWebDoc {
+                title
+                link
+                content
+              }
+              ... on AttachmentIssueDoc {
+                title
+                link
+                author {
+                  id
+                  email
+                  name
+                }
+                body
+                closed
+              }
+              ... on AttachmentPullDoc {
+                title
+                link
+                author {
+                  id
+                  email
+                  name
+                }
+                body
+                merged
+              }
+              ... on AttachmentCommitDoc {
+                sha
+                message
+                author {
+                  id
+                  email
+                  name
+                }
+                authorAt
+              }
+            }
+          }
         }
         cursor
       }

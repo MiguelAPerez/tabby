@@ -58,6 +58,8 @@ export class TabbyApiClient extends EventEmitter {
 
   private reconnectTimer: ReturnType<typeof setInterval> | undefined = undefined;
 
+  private heartbeatTimer: ReturnType<typeof setInterval> | undefined = undefined;
+
   constructor(
     private readonly configurations: Configurations,
     private readonly anonymousUsageLogger: AnonymousUsageLogger,
@@ -88,11 +90,22 @@ export class TabbyApiClient extends EventEmitter {
         await this.connect();
       }
     }, reconnectInterval);
+
+    const heartBeatInterval = 1000 * 60; // 1m
+    this.heartbeatTimer = setInterval(async () => {
+      if (this.status === "ready") {
+        this.logger.trace("Heartbeat...");
+        await this.healthCheck({ background: true });
+      }
+    }, heartBeatInterval);
   }
 
   async shutdown() {
     if (this.reconnectTimer) {
       clearInterval(this.reconnectTimer);
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
     }
   }
 
@@ -253,13 +266,27 @@ export class TabbyApiClient extends EventEmitter {
     }
   }
 
-  private async healthCheck(signal?: AbortSignal, method: "GET" | "POST" = "GET"): Promise<void> {
+  private async healthCheck(options?: {
+    signal?: AbortSignal;
+    method?: "GET" | "POST";
+    background?: boolean;
+  }): Promise<void> {
+    const signal = options?.signal;
+    const method = options?.method ?? "GET";
+    const background = options?.background;
+
     if (this.healthCheckMutexAbortController && !this.healthCheckMutexAbortController.signal.aborted) {
+      // if background check true, and there is a running check, ignore background check
+      if (background) {
+        return;
+      }
       this.healthCheckMutexAbortController.abort(new MutexAbortError());
     }
     const abortController = new AbortController();
     this.healthCheckMutexAbortController = abortController;
-    this.updateIsConnecting(true);
+    if (!background) {
+      this.updateIsConnecting(true);
+    }
 
     const requestId = uuid();
     const requestPath = "/v1/health";
@@ -290,7 +317,7 @@ export class TabbyApiClient extends EventEmitter {
       if (isCanceledError(error)) {
         this.logger.debug(`Health check request canceled. [${requestId}]`);
       } else if (error instanceof HttpError && error.status == 405 && method !== "POST") {
-        return await this.healthCheck(signal, "POST");
+        return await this.healthCheck({ signal, method: "POST" });
       } else if (isUnauthorizedError(error)) {
         this.serverHealth = undefined;
         this.updateStatus("unauthorized");
@@ -309,7 +336,9 @@ export class TabbyApiClient extends EventEmitter {
     } finally {
       if (this.healthCheckMutexAbortController === abortController) {
         this.healthCheckMutexAbortController = undefined;
-        this.updateIsConnecting(false);
+        if (!background) {
+          this.updateIsConnecting(false);
+        }
       }
     }
   }

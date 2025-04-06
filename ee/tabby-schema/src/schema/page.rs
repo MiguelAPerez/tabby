@@ -7,6 +7,7 @@ pub use types::*;
 use crate::{policy::AccessPolicy, schema::Result};
 
 pub type ThreadToPageRunStream = BoxStream<'static, Result<PageRunItem>>;
+pub type PageRunStream = BoxStream<'static, Result<PageRunItem>>;
 pub type SectionRunStream = BoxStream<'static, Result<SectionRunItem>>;
 
 #[async_trait]
@@ -18,6 +19,13 @@ pub trait PageService: Send + Sync {
         thread_id: &ID,
     ) -> Result<ThreadToPageRunStream>;
 
+    async fn create_run(
+        &self,
+        policy: &AccessPolicy,
+        author_id: &ID,
+        input: &CreatePageRunInput,
+    ) -> Result<PageRunStream>;
+
     async fn list(
         &self,
         ids: Option<&[ID]>,
@@ -27,6 +35,8 @@ pub trait PageService: Send + Sync {
         last: Option<usize>,
     ) -> Result<Vec<Page>>;
     async fn get(&self, id: &ID) -> Result<Page>;
+    async fn update_title(&self, id: &ID, title: &str) -> Result<()>;
+    async fn update_content(&self, id: &ID, content: &str) -> Result<()>;
     async fn delete(&self, id: &ID) -> Result<()>;
 
     async fn list_sections(
@@ -36,8 +46,8 @@ pub trait PageService: Send + Sync {
         before: Option<String>,
         first: Option<usize>,
         last: Option<usize>,
-    ) -> Result<Vec<Section>>;
-    async fn get_section(&self, id: &ID) -> Result<Section>;
+    ) -> Result<Vec<PageSection>>;
+    async fn get_section(&self, id: &ID) -> Result<PageSection>;
     async fn move_section(
         &self,
         page_id: &ID,
@@ -49,5 +59,8 @@ pub trait PageService: Send + Sync {
         policy: &AccessPolicy,
         input: &CreatePageSectionRunInput,
     ) -> Result<SectionRunStream>;
+    async fn update_section_title(&self, id: &ID, title: &str) -> Result<()>;
+    async fn update_section_content(&self, id: &ID, content: &str) -> Result<()>;
+
     async fn delete_section(&self, id: &ID) -> Result<()>;
 }

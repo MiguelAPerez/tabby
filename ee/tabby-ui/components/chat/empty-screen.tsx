@@ -1,10 +1,11 @@
-import { Dispatch, SetStateAction, useMemo } from 'react'
+import { Dispatch, SetStateAction, useContext, useMemo } from 'react'
 import { useQuery } from 'urql'
 
 import { listMyThreads } from '@/lib/tabby/query'
 import { Button } from '@/components/ui/button'
 import { IconArrowRight } from '@/components/ui/icons'
 
+import { ChatContext } from './chat-context'
 import { ThreadItem } from './thread-item'
 
 const exampleMessages = [
@@ -29,6 +30,7 @@ export function EmptyScreen({
   setShowHistory: Dispatch<SetStateAction<boolean>>
   onSelectThread: (threadId: string) => void
 }) {
+  const { contextInfo, fetchingContextInfo } = useContext(ChatContext)
   const welcomeMsg = welcomeMessage || 'Welcome'
   const [{ data }] = useQuery({
     query: listMyThreads,
@@ -67,36 +69,36 @@ export function EmptyScreen({
           ))}
         </div>
       </div>
-      {/* todo conditions */}
-      {/* {!!threads?.length && ( */}
-      <div className="mt-10">
-        <div className="mb-3 flex items-center gap-2">
-          <span className="text-lg font-semibold">Recent Activities</span>
+      {!!threads?.length && (
+        <div className="mt-10">
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-lg font-semibold">Recent Activities</span>
+          </div>
+          <div className="space-y-4">
+            {threads?.map(x => {
+              return (
+                <ThreadItem
+                  key={x.node.id}
+                  data={x}
+                  onNavigate={onNavigateToThread}
+                  sources={contextInfo?.sources}
+                  fetchingSources={fetchingContextInfo}
+                />
+              )
+            })}
+          </div>
+          <div className="text-center">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={e => setShowHistory(true)}
+              className="mt-4 text-foreground/70"
+            >
+              View all history
+            </Button>
+          </div>
         </div>
-        <div className="space-y-4">
-          {threads?.map(x => {
-            return (
-              <ThreadItem
-                key={x.node.id}
-                data={x}
-                onNavigate={onNavigateToThread}
-                sources={undefined}
-              />
-            )
-          })}
-        </div>
-        <div className="text-center">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={e => setShowHistory(true)}
-            className="mt-4 text-foreground/70"
-          >
-            View all history
-          </Button>
-        </div>
-      </div>
-      {/* )} */}
+      )}
     </div>
   )
 }

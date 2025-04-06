@@ -5,7 +5,14 @@ import { marked } from 'marked'
 
 import { Maybe } from '@/lib/gql/generates/graphql'
 import type { AttachmentDocItem } from '@/lib/types'
-import { getContent } from '@/lib/utils'
+import {
+  cn,
+  getAttachmentDocContent,
+  isAttachmentCommitDoc,
+  isAttachmentIssueDoc,
+  isAttachmentPullDoc,
+  isAttachmentWebDoc
+} from '@/lib/utils'
 
 import { SiteFavicon } from '../site-favicon'
 import { Badge } from '../ui/badge'
@@ -19,35 +26,59 @@ import { UserAvatar } from '../user-avatar'
 
 export function DocDetailView({
   relevantDocument,
-  enableDeveloperMode
+  enableDeveloperMode,
+  onLinkClick
 }: {
   relevantDocument: AttachmentDocItem
   enableDeveloperMode?: boolean
+  onLinkClick?: (url: string) => void
 }) {
-  const sourceUrl = relevantDocument ? new URL(relevantDocument.link) : null
-  const isIssue = relevantDocument?.__typename === 'MessageAttachmentIssueDoc'
-  const isPR = relevantDocument?.__typename === 'MessageAttachmentPullDoc'
-  const author =
-    relevantDocument.__typename === 'MessageAttachmentWebDoc'
-      ? undefined
-      : relevantDocument.author
+  const isIssue = isAttachmentIssueDoc(relevantDocument)
+  const isPR = isAttachmentPullDoc(relevantDocument)
+  const isCommit = isAttachmentCommitDoc(relevantDocument)
+  const link = isCommit ? undefined : relevantDocument.link
+  const title = isCommit ? (
+    <span>
+      Commit
+      <span
+        title={relevantDocument.sha}
+        className="mb-1 ml-1 rounded bg-muted px-1 py-0.5"
+      >
+        {relevantDocument.sha.slice(0, 7)}
+      </span>
+    </span>
+  ) : (
+    relevantDocument.title
+  )
+  const sourceUrl = link ? new URL(link) : null
+  const author = isAttachmentWebDoc(relevantDocument)
+    ? undefined
+    : relevantDocument.author
   const score = relevantDocument?.extra?.score
 
   return (
     <div className="prose max-w-none break-words dark:prose-invert prose-p:leading-relaxed prose-pre:mt-1 prose-pre:p-0">
       <div className="flex w-full flex-col gap-y-1 text-sm">
-        <div className="m-0 flex items-center space-x-1 text-xs leading-none text-muted-foreground">
-          <SiteFavicon
-            hostname={sourceUrl!.hostname}
-            className="m-0 mr-1 leading-none"
-          />
-          <p className="m-0 leading-none">{sourceUrl!.hostname}</p>
-        </div>
+        {!!sourceUrl && (
+          <div className="m-0 flex items-center space-x-1 text-xs leading-none text-muted-foreground">
+            <SiteFavicon
+              hostname={sourceUrl!.hostname}
+              className="m-0 mr-1 leading-none"
+            />
+            <p className="m-0 leading-none">{sourceUrl!.hostname}</p>
+          </div>
+        )}
         <p
-          className="m-0 cursor-pointer font-bold leading-none transition-opacity hover:opacity-70"
-          onClick={() => window.open(relevantDocument.link)}
+          className={cn('m-0 font-bold leading-none', {
+            'cursor-pointer transition-opacity hover:opacity-70': !!link
+          })}
+          onClick={() => {
+            if (link) {
+              onLinkClick?.(link)
+            }
+          }}
         >
-          {relevantDocument.title}
+          {title}
         </p>
         <div className="mb-2 w-auto">
           {isIssue && (
@@ -56,9 +87,10 @@ export function DocDetailView({
           {isPR && (
             <PullDocInfoView merged={relevantDocument.merged} user={author} />
           )}
+          {isCommit && <CommitInfoView user={author} />}
         </div>
         <p className="m-0 line-clamp-4 leading-none">
-          {normalizedText(getContent(relevantDocument))}
+          {normalizedText(getAttachmentDocContent(relevantDocument))}
         </p>
         {!!enableDeveloperMode && !isNil(score) && (
           <p className="mt-4">Score: {score}</p>
@@ -102,6 +134,27 @@ function IssueDocInfoView({
   return (
     <div className="flex items-center gap-3">
       <IssueStateBadge closed={closed} />
+      <div className="flex flex-1 items-center gap-1.5">
+        {!!user && (
+          <>
+            <UserAvatar user={user} className="not-prose h-5 w-5 shrink-0" />
+            <span className="font-semibold text-muted-foreground">
+              {user.name || user.email}
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CommitInfoView({
+  user
+}: {
+  user: Maybe<{ id: string; email: string; name: string }> | undefined
+}) {
+  return (
+    <div className="flex items-center gap-3">
       <div className="flex flex-1 items-center gap-1.5">
         {!!user && (
           <>

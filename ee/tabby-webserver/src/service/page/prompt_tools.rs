@@ -1,99 +1,92 @@
-pub fn prompt_page_title() -> &'static str {
-    r#"
-You are a helpful assistant that helps the user to write documents,
-I am seeking your assistance in summarizing a conversation
-and creating a succinct title that encapsulates its essence.
-The title should not exceed 50 words,
-and must be in the same language as the conversation provided.
+use tabby_schema::page::PageSection;
 
-To ensure the title accurately reflect the content,
-please consider the context and key points discussed during the above dialogue.
+pub fn prompt_page_title(title: Option<&str>) -> String {
+    let prompt = if let Some(title) = title {
+        format!(r#"Please help me to generate a page title for the input provided: {title}"#)
+    } else {
+        "Summarize the above conversation and create a succinct title that encapsulates its essence. Please only generate the title and nothing else. Do not include any additional text or context.".into()
+    };
 
-Please do not include any additional information beyond the title itself,
-and ensure no quotes or special characters or Title prefix are present in the title.
-
-Please do not repeat the previous titles.
-
-Please help me to generate a page title for the above conversation.
-"#
+    format!("{prompt}\nPlease only generate the title and nothing else. Do not include any additional text.")
 }
 
-pub fn prompt_page_content(title: &str) -> String {
+pub fn prompt_page_content(title: &str, page_section_titles: &[String]) -> String {
+    let page_section_titles = page_section_titles.join("\n");
     format!(
         r#"
-You are a helpful assistant that helps the user to write documents,
-I am requesting your support in crafting a page of a recent conversation I had.
-you need to summary the conversation based on the conversation and context provided.
-The summary should be concise, no more than 200 words.
+You're writing the intro section of a page named "{title}". It contains the following sub sections:
+{page_section_titles}.
 
-The language used in the summary should correspond to that of the initial dialogue and existing content.
-Your task is to distill the key points and main themes of the dialogue into a coherent and informative summary.
+Here're some rules you need to follow when creating content:
+* Please generate the content for the introduction section based on the information provided above.
+* Ensure the content is a single paragraph without any subtitles or nested sections.
+* Do not just blindly create a intro section listing all sub section, you should give a high level overview of the page, e.g background, why it's important, etc.
+* Include code snippets if necessary, but keep them concise and relevant.
+* Do not include any additional text.
 
-The title for the page is: {title}
-
-Please refrain from duplicating the page title.
-Please help me to generate a page title for the above conversation.
 "#
     )
 }
 
-pub fn prompt_page_section_titles(count: usize, page: &str, new_section: &str) -> String {
-    let new_section = if !new_section.is_empty() {
-        format!("The new section is about: {new_section}.")
+fn generate_page_prompt(title: &str, sections: &[PageSection]) -> String {
+    if sections.is_empty() {
+        format!("You're writing a page named \"{}\".\n", title)
+    } else {
+        let sections = sections
+            .iter()
+            .map(|x| format!("## {}\n\n{}", x.title, x.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"Here's some existing writings about the page.
+=== Page Content Start ===
+# {title}
+
+{sections}
+=== Page Content End ===
+"#,
+        )
+    }
+}
+
+pub fn prompt_page_section_titles(
+    count: usize,
+    title: &str,
+    sections: &[PageSection],
+    new_section_prompt: Option<&str>,
+) -> String {
+    let page_prompt = generate_page_prompt(title, sections);
+
+    let new_section = if let Some(new_section_prompt) = new_section_prompt {
+        format!("The new section is about: {new_section_prompt}.\n")
     } else {
         "".to_string()
     };
 
     format!(
-        r#"
-You are a helpful assistant that helps the user to write documents,
-I am seeking your assistance in summarizing a conversation
-and creating a succinct title that encapsulates its essence.
-The title should not exceed 50 words,
-and must be in the same language as the conversation provided.
-
-To ensure the title accurately reflect the content,
-please consider the context and key points discussed during the above dialogue.
-
-Please do not include any additional information beyond the title itself,
-and ensure no quotes or special characters or Title prefix are present in the title.
-
-The current page title and content is:
-
-```markdown
-{page}
-```
-
-{new_section}
-
-Please help me to generate {count} section titles for the above conversation and context,
-please do not repeat the previous section titles.
+        r#"{page_prompt}{new_section}Please generate {count} section titles for the page based on above information.
+Please only generate the section title and nothing else. Do not include any additional text.
+Each section title should be on a new line.
+There's no need to have a intro section, as page will contains a intro section anyway.
 "#
     )
 }
 
-pub fn prompt_page_section_content(page: &str, title: &str) -> String {
+pub fn prompt_page_section_content(
+    title: &str,
+    sections: &[PageSection],
+    new_section_title: &str,
+) -> String {
+    let page_prompt = generate_page_prompt(title, sections);
+
     format!(
-        r#"
-You are a helpful assistant that helps the user to write documents,
-I am requesting your support in crafting a page of a recent conversation I had.
-There may be some existed or not existed titles and contents in the page,
-and you need to fill in the content based on the conversation and context provided.
-The content should contain each key point and main theme of the dialogue base on the current title.
+        r#"{page_prompt}The current section title is: {new_section_title}, please create content for this section based on above information.
 
-The language used in the content should correspond to that of the initial dialogue and existing content.
-Your task is to provide a content base on the conversation, existing content, and current title.
-
-There are some of the section titles and contents that have been generated:
-
-```markdown
-{page}
-```
-
-The current section title is: {title}
-
-Please help me to generate this page section content using the above conversation as context,
-Please make sure not to include the section title in the content.
+Here're some rules you need to follow when creating content:
+* Try not repeat content / pattern from the previous sections as much as possible.
+* Ensure the content is a single paragraph without any subtitles or nested sections.
+* Do not include any additional output, just write the content directly.
+* Include code snippets if necessary, but keep them concise and relevant, and try refer to the code snippets in the previous sections if possible (instead of creating new ones).
 "#,
     )
 }

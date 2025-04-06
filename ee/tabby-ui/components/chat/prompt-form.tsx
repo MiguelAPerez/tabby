@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useImperativeHandle } from 'react'
+import React, { useContext, useImperativeHandle, useRef } from 'react'
 import Document from '@tiptap/extension-document'
 import Mention from '@tiptap/extension-mention'
 import Paragraph from '@tiptap/extension-paragraph'
@@ -16,31 +16,27 @@ import {
 import './prompt-form.css'
 
 import { EditorState } from '@tiptap/pm/state'
-import { isEqual, uniqBy } from 'lodash-es'
-import { EditorFileContext } from 'tabby-chat-panel/index'
+import { uniqBy } from 'lodash-es'
 import tippy, { GetReferenceClientRect, Instance } from 'tippy.js'
 
 import { NEWLINE_CHARACTER } from '@/lib/constants'
-import { useDebounceCallback } from '@/lib/hooks/use-debounce'
 import { useLatest } from '@/lib/hooks/use-latest'
 import { useSelectedModel } from '@/lib/hooks/use-models'
-import { updateSelectedModel } from '@/lib/stores/chat-actions'
-import { FileContext } from '@/lib/types'
-import { cn, convertEditorContext } from '@/lib/utils'
+import { updateSelectedModel } from '@/lib/stores/chat-store'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { IconArrowRight, IconAtSign } from '@/components/ui/icons'
 
 import { ModelSelect } from '../textarea-search/model-select'
 import { ChatContext } from './chat-context'
-import { emitter } from './event-emitter'
 import {
   MentionList,
   MentionListActions,
   MentionListProps,
   PromptFormMentionExtension
 } from './form-editor/mention'
-import { fileItemToSourceItem, isSameFileContext } from './form-editor/utils'
-import { PromptFormRef, PromptProps } from './types'
+import { fileItemToSourceItem, getMention } from './form-editor/utils'
+import { EditorMentionData, PromptFormRef, PromptProps } from './types'
 
 /**
  * It provides the main logic for the chat input with mention functionality.
@@ -52,11 +48,13 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
       readFileContent,
       relevantContext,
       setRelevantContext,
-      listSymbols
+      listSymbols,
+      getChanges
     } = useContext(ChatContext)
 
     const { selectedModel, models } = useSelectedModel()
-
+    // mentionData snapshoot
+    const prevMentionsRef = useRef<Array<EditorMentionData>>([])
     const doSubmit = useLatest(async () => {
       if (isLoading || !editor) return
 
@@ -123,9 +121,21 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
                           category: 'category'
                         }
                       ]
-                    : []),
-                  ...uniqBy(files.map(fileItemToSourceItem), 'id')
+                    : [])
                 ]
+
+                if (
+                  getChanges &&
+                  (!query || 'changes'.includes(query.toLowerCase()))
+                ) {
+                  items.push({
+                    id: 'command',
+                    name: 'changes',
+                    category: 'command'
+                  })
+                }
+                items.push(...uniqBy(files.map(fileItemToSourceItem), 'id'))
+
                 return items
               },
 
@@ -139,7 +149,12 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
                 return {
                   onStart: props => {
                     component = new ReactRenderer(MentionList, {
-                      props: { ...props, listFileInWorkspace, listSymbols },
+                      props: {
+                        ...props,
+                        listFileInWorkspace,
+                        listSymbols,
+                        getChanges
+                      },
                       editor: props.editor
                     })
 
@@ -156,7 +171,8 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
                       interactive: true,
                       trigger: 'manual',
                       placement: 'top-start',
-                      animation: 'shift-away'
+                      animation: 'shift-away',
+                      maxWidth: '90%'
                     })
                   },
                   onUpdate: props => {
@@ -186,11 +202,14 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
             )
           }
         },
+        onCreate({ editor }) {
+          prevMentionsRef.current = getMention(editor)
+        },
         onUpdate(props) {
           onUpdate?.(props)
         }
       },
-      [listFileInWorkspace]
+      [listFileInWorkspace, getChanges]
     )
 
     // Current text from the editor (for checking if the submit button is disabled)
@@ -240,88 +259,6 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
       [editor, input]
     )
 
-    /**
-     * This function compares the current mentions in the editor with the relevant context
-     * and updates the context accordingly.
-     * It adds new mentions and removes mentions that are no longer present in the editor.
-     * Only mentions that refer to the whole file are considered.
-     */
-    const diffAndUpdateMentionContext = useDebounceCallback(async () => {
-      if (!readFileContent || !editor) return
-
-      const contextInEditor: EditorFileContext[] = []
-      editor.view.state.doc.descendants(node => {
-        if (
-          node.type.name === 'mention' &&
-          (node.attrs.category === 'file' || node.attrs.category === 'symbol')
-        ) {
-          contextInEditor.push({
-            kind: 'file',
-            content: '',
-            filepath: node.attrs.fileItem.filepath,
-            range:
-              node.attrs.category === 'symbol'
-                ? node.attrs.fileItem.range
-                : undefined
-          })
-        }
-      })
-
-      let prevContext: FileContext[] = relevantContext
-      let updatedContext = [...prevContext]
-
-      const mentionsToAdd = contextInEditor.filter(
-        ctx =>
-          !prevContext.some(prevCtx =>
-            isSameFileContext(convertEditorContext(ctx), prevCtx)
-          )
-      )
-
-      // Remove mentions from the context if they are no longer present in the editor
-      const mentionsToRemove = prevContext.filter(
-        prevCtx =>
-          !contextInEditor.some(ctx =>
-            isSameFileContext(convertEditorContext(ctx), prevCtx)
-          )
-      )
-
-      for (const ctx of mentionsToRemove) {
-        updatedContext = updatedContext.filter(
-          prevCtx => !isEqual(prevCtx, ctx)
-        )
-      }
-
-      for (const ctx of mentionsToAdd) {
-        // Read the file content and add it to the context
-        const content = await readFileContent({
-          filepath: ctx.filepath,
-          range: ctx.range
-        })
-        updatedContext.push(
-          convertEditorContext({
-            kind: 'file',
-            content: content || '',
-            filepath: ctx.filepath,
-            range: ctx.range
-          })
-        )
-      }
-
-      setRelevantContext(updatedContext)
-    }, 100)
-
-    useEffect(() => {
-      const onFileMentionUpdate = () => {
-        diffAndUpdateMentionContext.run()
-      }
-
-      emitter.on('file_mention_update', onFileMentionUpdate)
-
-      return () => {
-        emitter.off('file_mention_update', onFileMentionUpdate)
-      }
-    }, [])
-
     return (
       <div className={cn('relative flex flex-col', className)} {...props}>
         {/* Editor */}
@@ -345,13 +282,15 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
         </div>
         <div className="flex items-center justify-between">
           <div className="-ml-1.5 flex items-center gap-2">
-            <Button
-              variant="ghost"
-              className="h-auto shrink-0 gap-2 p-1.5 text-foreground/90"
-              onClick={e => onInsertMention('@')}
-            >
-              <IconAtSign />
-            </Button>
+            {!!listFileInWorkspace && (
+              <Button
+                variant="ghost"
+                className="h-auto shrink-0 gap-2 p-1.5 text-foreground/90"
+                onClick={e => onInsertMention('@')}
+              >
+                <IconAtSign />
+              </Button>
+            )}
             <ModelSelect
               models={models}
               value={selectedModel}
@@ -373,7 +312,6 @@ const PromptForm = React.forwardRef<PromptFormRef, PromptProps>(
     )
   }
 )
-
 PromptForm.displayName = 'PromptForm'
 
 /**
@@ -381,8 +319,8 @@ PromptForm.displayName = 'PromptForm'
  */
 export default PromptForm
 
-const CustomKeyboardShortcuts = (onSubmit: () => void) =>
-  Extension.create({
+function CustomKeyboardShortcuts(onSubmit: () => void) {
+  return Extension.create({
     addKeyboardShortcuts() {
       return {
         Enter: ({ editor }) => {
@@ -400,3 +338,4 @@ const CustomKeyboardShortcuts = (onSubmit: () => void) =>
       }
     }
   })
+}

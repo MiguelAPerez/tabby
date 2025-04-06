@@ -2,10 +2,10 @@ use anyhow::bail;
 use hash_ids::HashIds;
 use lazy_static::lazy_static;
 use tabby_db::{
-    AttachmentClientCode, AttachmentCode, AttachmentCodeFileList, AttachmentDoc,
-    AttachmentIssueDoc, AttachmentPullDoc, AttachmentWebDoc, EmailSettingDAO, IntegrationDAO,
-    InvitationDAO, JobRunDAO, LdapCredentialDAO, NotificationDAO, OAuthCredentialDAO, PageDAO,
-    PageSectionDAO, ServerSettingDAO, ThreadDAO, UserEventDAO,
+    AttachmentClientCode, AttachmentCode, AttachmentCodeFileList, AttachmentCommitDoc,
+    AttachmentDoc, AttachmentIssueDoc, AttachmentPullDoc, AttachmentWebDoc, EmailSettingDAO,
+    IntegrationDAO, InvitationDAO, JobRunDAO, LdapCredentialDAO, NotificationDAO,
+    OAuthCredentialDAO, PageDAO, ServerSettingDAO, ThreadDAO, UserEventDAO,
 };
 
 use crate::{
@@ -15,6 +15,7 @@ use crate::{
     notification::{Notification, NotificationRecipient},
     page,
     repository::RepositoryKind,
+    retrieval,
     schema::{
         auth::{self, LdapCredential, OAuthCredential, OAuthProvider},
         email::{AuthMethod, EmailSetting, Encryption},
@@ -26,7 +27,7 @@ use crate::{
         user_event::{EventKind, UserEvent},
         CoreError,
     },
-    thread,
+    thread::{self},
 };
 
 impl From<InvitationDAO> for auth::Invitation {
@@ -115,6 +116,7 @@ impl From<ServerSettingDAO> for SecuritySetting {
                 .map(|s| s.to_owned())
                 .collect(),
             disable_client_side_telemetry: value.security_disable_client_side_telemetry,
+            disable_password_login: value.security_disable_password_login,
         }
     }
 }
@@ -270,6 +272,7 @@ impl From<AttachmentCodeFileList> for thread::MessageAttachmentCodeFileList {
     fn from(value: AttachmentCodeFileList) -> Self {
         Self {
             file_list: value.file_list,
+            truncated: value.truncated,
         }
     }
 }
@@ -305,6 +308,14 @@ pub fn from_thread_message_attachment_document(
                 merged: pull.merged,
             })
         }
+        AttachmentDoc::Commit(commit) => {
+            thread::MessageAttachmentDoc::Commit(thread::MessageAttachmentCommitDoc {
+                sha: commit.sha,
+                message: commit.message,
+                author,
+                author_at: commit.author_at,
+            })
+        }
     }
 }
 
@@ -335,6 +346,16 @@ impl From<&thread::MessageAttachmentDoc> for AttachmentDoc {
                 diff: val.patch.clone(),
                 merged: val.merged,
             }),
+            thread::MessageAttachmentDoc::Commit(val) => {
+                AttachmentDoc::Commit(AttachmentCommitDoc {
+                    sha: val.sha.clone(),
+                    message: val.message.clone(),
+                    author_user_id: val.author.as_ref().map(|x| match x {
+                        UserValue::UserSecured(user) => user.id.to_string(),
+                    }),
+                    author_at: val.author_at,
+                })
+            }
         }
     }
 }
@@ -357,6 +378,7 @@ impl From<PageDAO> for page::Page {
             id: value.id.as_id(),
             author_id: value.author_id.as_id(),
             title: value.title,
+            code_source_id: value.code_source_id,
             content: value.content,
             created_at: value.created_at,
             updated_at: value.updated_at,
@@ -364,16 +386,78 @@ impl From<PageDAO> for page::Page {
     }
 }
 
-impl From<PageSectionDAO> for page::Section {
-    fn from(value: PageSectionDAO) -> Self {
+impl From<&retrieval::AttachmentCode> for AttachmentCode {
+    fn from(value: &retrieval::AttachmentCode) -> Self {
         Self {
-            id: value.id.as_id(),
-            page_id: value.page_id.as_id(),
-            title: value.title,
-            position: value.position as i32,
-            content: value.content.unwrap_or_default(),
-            created_at: value.created_at,
-            updated_at: value.updated_at,
+            git_url: value.git_url.clone(),
+            commit: value.commit.clone(),
+            filepath: value.filepath.clone(),
+            language: value.language.clone(),
+            content: value.content.clone(),
+            start_line: value.start_line.map(|x| x as usize),
+        }
+    }
+}
+
+impl From<&AttachmentCode> for retrieval::AttachmentCode {
+    fn from(value: &AttachmentCode) -> Self {
+        Self {
+            git_url: value.git_url.clone(),
+            commit: value.commit.clone(),
+            filepath: value.filepath.clone(),
+            language: value.language.clone(),
+            content: value.content.clone(),
+            start_line: value.start_line.map(|x| x as i32),
+        }
+    }
+}
+
+impl From<AttachmentCodeFileList> for retrieval::AttachmentCodeFileList {
+    fn from(value: AttachmentCodeFileList) -> Self {
+        Self {
+            file_list: value.file_list,
+            truncated: value.truncated,
+        }
+    }
+}
+
+impl From<&retrieval::AttachmentDoc> for AttachmentDoc {
+    fn from(value: &retrieval::AttachmentDoc) -> Self {
+        match value {
+            retrieval::AttachmentDoc::Web(web) => AttachmentDoc::Web(AttachmentWebDoc {
+                title: web.title.clone(),
+                link: web.link.clone(),
+                content: web.content.clone(),
+            }),
+            retrieval::AttachmentDoc::Issue(issue) => AttachmentDoc::Issue(AttachmentIssueDoc {
+                title: issue.title.clone(),
+                link: issue.link.clone(),
+                author_user_id: issue.author.as_ref().map(|x| match x {
+                    UserValue::UserSecured(user) => user.id.to_string(),
+                }),
+                body: issue.body.clone(),
+                closed: issue.closed,
+            }),
+            retrieval::AttachmentDoc::Pull(pull) => AttachmentDoc::Pull(AttachmentPullDoc {
+                title: pull.title.clone(),
+                link: pull.link.clone(),
+                author_user_id: pull.author.as_ref().map(|x| match x {
+                    UserValue::UserSecured(user) => user.id.to_string(),
+                }),
+                body: pull.body.clone(),
+                diff: pull.diff.clone(),
+                merged: pull.merged,
+            }),
+            retrieval::AttachmentDoc::Commit(commit) => {
+                AttachmentDoc::Commit(AttachmentCommitDoc {
+                    sha: commit.sha.clone(),
+                    message: commit.message.clone(),
+                    author_user_id: commit.author.as_ref().map(|x| match x {
+                        UserValue::UserSecured(user) => user.id.to_string(),
+                    }),
+                    author_at: commit.author_at,
+                })
+            }
         }
     }
 }
@@ -423,6 +507,7 @@ impl DbEnum for EventKind {
     fn as_enum_str(&self) -> &'static str {
         match self {
             EventKind::Completion => "completion",
+            EventKind::ChatCompletion => "chat_completion",
             EventKind::Select => "select",
             EventKind::View => "view",
             EventKind::Dismiss => "dismiss",
@@ -432,6 +517,7 @@ impl DbEnum for EventKind {
     fn from_enum_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "completion" => Ok(EventKind::Completion),
+            "chat_completion" => Ok(EventKind::ChatCompletion),
             "select" => Ok(EventKind::Select),
             "view" => Ok(EventKind::View),
             "dismiss" => Ok(EventKind::Dismiss),

@@ -8,7 +8,7 @@ use tabby_common::api::{
 use validator::Validate;
 
 use super::MessageAttachmentCodeInput;
-use crate::{interface::UserValue, juniper::relay::NodeType, Context};
+use crate::{interface::UserValue, juniper::relay::NodeType, ChatCompletionMessage, Context};
 
 #[derive(GraphQLEnum, Serialize, Clone, PartialEq, Eq)]
 pub enum Role {
@@ -76,6 +76,7 @@ pub struct MessageAttachment {
 #[derive(GraphQLObject, Clone)]
 pub struct MessageAttachmentCodeFileList {
     pub file_list: Vec<String>,
+    pub truncated: bool,
 }
 
 #[derive(GraphQLObject, Clone)]
@@ -158,6 +159,7 @@ pub enum MessageAttachmentDoc {
     Web(MessageAttachmentWebDoc),
     Issue(MessageAttachmentIssueDoc),
     Pull(MessageAttachmentPullDoc),
+    Commit(MessageAttachmentCommitDoc),
 }
 
 #[derive(GraphQLObject, Clone)]
@@ -188,6 +190,15 @@ pub struct MessageAttachmentPullDoc {
     pub merged: bool,
 }
 
+#[derive(GraphQLObject, Clone)]
+#[graphql(context = Context)]
+pub struct MessageAttachmentCommitDoc {
+    pub sha: String,
+    pub message: String,
+    pub author: Option<UserValue>,
+    pub author_at: DateTime<Utc>,
+}
+
 impl MessageAttachmentDoc {
     pub fn from_doc_search_document(doc: DocSearchDocument, author: Option<UserValue>) -> Self {
         match doc {
@@ -213,14 +224,23 @@ impl MessageAttachmentDoc {
                 patch: pull.diff,
                 merged: pull.merged,
             }),
+            DocSearchDocument::Commit(commit) => {
+                MessageAttachmentDoc::Commit(MessageAttachmentCommitDoc {
+                    sha: commit.sha,
+                    message: commit.message,
+                    author,
+                    author_at: commit.author_at,
+                })
+            }
         }
     }
 
-    pub fn content(&self) -> &str {
+    pub fn content(&self) -> String {
         match self {
-            MessageAttachmentDoc::Web(web) => &web.content,
-            MessageAttachmentDoc::Issue(issue) => &issue.body,
-            MessageAttachmentDoc::Pull(pull) => &pull.body,
+            MessageAttachmentDoc::Web(web) => web.content.to_string(),
+            MessageAttachmentDoc::Issue(issue) => issue.body.to_string(),
+            MessageAttachmentDoc::Pull(pull) => pull.body.to_string(),
+            MessageAttachmentDoc::Commit(commit) => commit.message.to_string(),
         }
     }
 }
@@ -284,12 +304,12 @@ pub struct ThreadAssistantMessageCreated {
 pub struct ThreadAssistantMessageReadingCode {
     pub snippet: bool,
     pub file_list: bool,
-    // pub commit_history: bool
 }
 
 #[derive(GraphQLObject)]
 pub struct ThreadAssistantMessageAttachmentsCodeFileList {
     pub file_list: Vec<String>,
+    pub truncated: bool,
 }
 
 #[derive(GraphQLObject)]
@@ -310,7 +330,14 @@ pub struct ThreadAssistantMessageContentDelta {
 
 #[derive(GraphQLObject)]
 pub struct ThreadAssistantMessageCompleted {
-    pub id: ID,
+    /// Debug data for the assistant message completion.
+    pub debug_data: Option<ThreadAssistantMessageCompletedDebugData>,
+}
+
+#[derive(GraphQLObject, Clone, Debug)]
+pub struct ThreadAssistantMessageCompletedDebugData {
+    // Messages sent to LLM to generate the response.
+    pub chat_completion_messages: Vec<ChatCompletionMessage>,
 }
 
 /// Schema of thread run stream.

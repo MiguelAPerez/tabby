@@ -44,6 +44,7 @@ const CreateThreadAndRunSubscription = graphql(/* GraphQL */ `
       }
       ... on ThreadAssistantMessageAttachmentsCodeFileList {
         codeFileList: fileList
+        truncated
       }
       ... on ThreadAssistantMessageAttachmentsCode {
         hits {
@@ -93,6 +94,16 @@ const CreateThreadAndRunSubscription = graphql(/* GraphQL */ `
               body
               merged
             }
+            ... on MessageAttachmentCommitDoc {
+              sha
+              message
+              author {
+                id
+                email
+                name
+              }
+              authorAt
+            }
           }
           score
         }
@@ -101,7 +112,12 @@ const CreateThreadAndRunSubscription = graphql(/* GraphQL */ `
         delta
       }
       ... on ThreadAssistantMessageCompleted {
-        id
+        debugData {
+          chatCompletionMessages {
+            role
+            content
+          }
+        }
       }
     }
   }
@@ -129,6 +145,7 @@ const CreateThreadRunSubscription = graphql(/* GraphQL */ `
       }
       ... on ThreadAssistantMessageAttachmentsCodeFileList {
         codeFileList: fileList
+        truncated
       }
       ... on ThreadAssistantMessageAttachmentsCode {
         hits {
@@ -178,6 +195,16 @@ const CreateThreadRunSubscription = graphql(/* GraphQL */ `
               body
               merged
             }
+            ... on MessageAttachmentCommitDoc {
+              sha
+              message
+              author {
+                id
+                email
+                name
+              }
+              authorAt
+            }
           }
           score
         }
@@ -186,7 +213,12 @@ const CreateThreadRunSubscription = graphql(/* GraphQL */ `
         delta
       }
       ... on ThreadAssistantMessageCompleted {
-        id
+        debugData {
+          chatCompletionMessages {
+            role
+            content
+          }
+        }
       }
     }
   }
@@ -213,6 +245,10 @@ export interface AnswerStream {
   relevantQuestions?: Array<string>
   attachmentsCode?: ThreadAssistantMessageAttachmentCodeHits
   attachmentsDoc?: ThreadAssistantMessageAttachmentDocHits
+  attachmentsFileList?: Extract<
+    CreateThreadRunSubscriptionResponse['createThreadRun'],
+    { __typename: 'ThreadAssistantMessageAttachmentsCodeFileList' }
+  >
   readingCode?: ThreadAssistantMessageReadingCode
   content: string
   isReadingCode: boolean
@@ -305,6 +341,7 @@ export function useThreadRun({
         break
       case 'ThreadAssistantMessageAttachmentsCodeFileList':
         x.isReadingFileList = false
+        x.attachmentsFileList = data
         break
       case 'ThreadAssistantMessageAttachmentsCode':
         x.isReadingCode = false

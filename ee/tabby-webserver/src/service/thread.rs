@@ -5,20 +5,19 @@ use futures::StreamExt;
 use juniper::ID;
 use tabby_db::{AttachmentDoc, DbConn, ThreadMessageDAO};
 use tabby_schema::{
-    auth::AuthenticationService,
+    auth::{AuthenticationService, UserSecured},
     bail,
     context::ContextService,
     from_thread_message_attachment_document,
-    policy::AccessPolicy,
     thread::{
-        self, CodeQueryInput, CreateMessageInput, CreateThreadInput, MessageAttachment,
-        MessageAttachmentDoc, MessageAttachmentInput, ThreadRunItem, ThreadRunOptionsInput,
-        ThreadRunStream, ThreadService, UpdateMessageInput,
+        self, CreateMessageInput, CreateThreadInput, MessageAttachment, MessageAttachmentDoc,
+        MessageAttachmentInput, ThreadRunItem, ThreadRunOptionsInput, ThreadRunStream,
+        ThreadService, UpdateMessageInput,
     },
     AsID, AsRowid, DbEnum, Result,
 };
 
-use super::{answer::AnswerService, graphql_pagination_to_filter};
+use super::{answer::AnswerService, graphql_pagination_to_filter, utils::get_source_id};
 
 struct ThreadServiceImpl {
     db: DbConn,
@@ -89,13 +88,15 @@ impl ThreadServiceImpl {
         let mut output = vec![];
         output.reserve(thread_docs.len());
         for thread_doc in thread_docs {
-            let id = match &thread_doc {
-                AttachmentDoc::Issue(issue) => issue.author_user_id.as_deref(),
-                AttachmentDoc::Pull(pull) => pull.author_user_id.as_deref(),
-                _ => None,
-            };
-            let user = if let Some(auth) = self.auth.as_ref() {
-                if let Some(id) = id {
+            let author = if let Some(auth) = self.auth.as_ref() {
+                let author_id = match &thread_doc {
+                    AttachmentDoc::Issue(issue) => issue.author_user_id.as_deref(),
+                    AttachmentDoc::Pull(pull) => pull.author_user_id.as_deref(),
+                    AttachmentDoc::Commit(commit) => commit.author_user_id.as_deref(),
+                    _ => None,
+                };
+
+                if let Some(id) = author_id {
                     auth.get_user(&juniper::ID::from(id.to_owned()))
                         .await
                         .ok()
@@ -107,28 +108,9 @@ impl ThreadServiceImpl {
                 None
             };
 
-            output.push(from_thread_message_attachment_document(thread_doc, user));
+            output.push(from_thread_message_attachment_document(thread_doc, author));
         }
         output
-    }
-
-    async fn get_source_id(&self, policy: &AccessPolicy, input: &CodeQueryInput) -> Option<String> {
-        let helper = self.context.read(Some(policy)).await.ok()?.helper();
-
-        if let Some(source_id) = &input.source_id {
-            if helper.can_access_source_id(source_id) {
-                Some(source_id.clone())
-            } else {
-                None
-            }
-        } else if let Some(git_url) = &input.git_url {
-            helper
-                .allowed_code_repository()
-                .closest_match(git_url)
-                .map(|s| s.to_string())
-        } else {
-            None
-        }
     }
 }
 
@@ -173,7 +155,7 @@ impl ThreadService for ThreadServiceImpl {
 
     async fn create_run(
         &self,
-        policy: &AccessPolicy,
+        user: &UserSecured,
         thread_id: &ID,
         options: &ThreadRunOptionsInput,
         attachment_input: Option<&MessageAttachmentInput>,
@@ -210,7 +192,9 @@ impl ThreadService for ThreadServiceImpl {
             .await?;
 
         if let Some(code_query) = &options.code_query {
-            if let Some(source_id) = self.get_source_id(policy, code_query).await {
+            if let Some(source_id) =
+                get_source_id(self.context.clone(), &user.policy, code_query).await
+            {
                 self.db
                     .update_thread_message_code_source_id(assistant_message_id, &source_id)
                     .await?;
@@ -218,7 +202,7 @@ impl ThreadService for ThreadServiceImpl {
         }
 
         let s = answer
-            .answer(policy, &messages, options, attachment_input)
+            .answer(user, &messages, options, attachment_input)
             .await?;
 
         // Copy ownership of db and thread_id for the stream
@@ -242,7 +226,7 @@ impl ThreadService for ThreadServiceImpl {
                     }
 
                     Ok(ThreadRunItem::ThreadAssistantMessageAttachmentsCodeFileList(x)) => {
-                        db.update_thread_message_code_file_list_attachment(assistant_message_id, &x.file_list).await?;
+                        db.update_thread_message_code_file_list_attachment(assistant_message_id, &x.file_list, x.truncated).await?;
                     }
 
                     Ok(ThreadRunItem::ThreadAssistantMessageAttachmentsCode(x)) => {
@@ -278,8 +262,6 @@ impl ThreadService for ThreadServiceImpl {
 
                 yield item;
             }
-
-            yield Ok(ThreadRunItem::ThreadAssistantMessageCompleted(thread::ThreadAssistantMessageCompleted { id: assistant_message_id.as_id() }));
         };
 
         Ok(s.boxed())
@@ -447,11 +429,16 @@ mod tests {
 
     use super::*;
     use crate::{
-        answer::testutils::{
-            make_repository_service, FakeChatCompletionStream, FakeCodeSearch, FakeContextService,
-            FakeDocSearch,
+        answer::{
+            self,
+            testutils::{
+                make_repository_service, FakeChatCompletionStream, FakeCodeSearch,
+                FakeContextService, FakeDocSearch,
+            },
         },
-        service::auth,
+        event_logger::test_utils::MockEventLogger,
+        retrieval,
+        service::{auth, UserSecuredExt},
     };
 
     #[tokio::test]
@@ -700,7 +687,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_run() {
         let db = DbConn::new_in_memory().await.unwrap();
-        let user_id = create_user(&db).await.as_id();
+        let user_id = create_user(&db).await;
+        let user = UserSecured::new(db.clone(), db.get_user(user_id).await.unwrap().unwrap());
         let auth = Arc::new(auth::testutils::FakeAuthService::new(vec![]));
         let chat: Arc<dyn ChatCompletionStream> = Arc::new(FakeChatCompletionStream {
             return_error: false,
@@ -711,15 +699,15 @@ mod tests {
         let serper = Some(Box::new(FakeDocSearch) as Box<dyn DocSearch>);
         let config = make_answer_config();
         let repo = make_repository_service(db.clone()).await.unwrap();
-        let answer_service = Arc::new(crate::answer::create(
+        let retrieval = Arc::new(retrieval::create(code.clone(), doc.clone(), serper, repo));
+        let logger = Arc::new(MockEventLogger {});
+        let answer_service = Arc::new(answer::create(
+            logger,
             &config,
-            auth.clone(),
-            chat.clone(),
-            code.clone(),
-            doc.clone(),
+            auth,
+            chat,
+            retrieval,
             context.clone(),
-            serper,
-            repo,
         ));
         let service = create(db.clone(), Some(answer_service), None, context);
 
@@ -730,13 +718,12 @@ mod tests {
             },
         };
 
-        let thread_id = service.create(&user_id, &input).await.unwrap();
+        let thread_id = service.create(&user.id, &input).await.unwrap();
 
-        let policy = AccessPolicy::new(db.clone(), &user_id, false);
         let options = ThreadRunOptionsInput::default();
 
         let run_stream = service
-            .create_run(&policy, &thread_id, &options, None, true, true)
+            .create_run(&user, &thread_id, &options, None, true, true)
             .await;
 
         assert!(run_stream.is_ok());

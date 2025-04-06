@@ -1,7 +1,9 @@
 import { createContext, RefObject } from 'react'
 import type {
+  ChangeItem,
   FileLocation,
   FileRange,
+  GetChangesParams,
   ListFileItem,
   ListFilesInWorkspaceParams,
   ListSymbolItem,
@@ -10,7 +12,10 @@ import type {
   SymbolInfo
 } from 'tabby-chat-panel'
 
-import { RepositorySourceListQuery } from '@/lib/gql/generates/graphql'
+import {
+  ContextInfo,
+  RepositorySourceListQuery
+} from '@/lib/gql/generates/graphql'
 import { Context, MessageActionType, QuestionAnswerPair } from '@/lib/types'
 
 import { PromptFormRef } from './types'
@@ -34,7 +39,7 @@ export type ChatContextValue = {
   onLookupSymbol?: (
     symbol: string,
     hints?: LookupSymbolHint[] | undefined
-  ) => Promise<SymbolInfo | undefined>
+  ) => Promise<SymbolInfo | null>
   openInEditor: (target: FileLocation) => Promise<boolean>
   openExternal: (url: string) => Promise<void>
   activeSelection: Context | null
@@ -47,12 +52,15 @@ export type ChatContextValue = {
   ) => Promise<ListFileItem[]>
   listSymbols?: (param: ListSymbolsParams) => Promise<ListSymbolItem[]>
   readFileContent?: (info: FileRange) => Promise<string | null>
-
+  getChanges?: (params: GetChangesParams) => Promise<ChangeItem[]>
   // for repo select
   selectedRepoId: string | undefined
   setSelectedRepoId: React.Dispatch<React.SetStateAction<string | undefined>>
   repos: RepositorySourceListQuery['repositoryList'] | undefined
   fetchingRepos: boolean
+  runShell?: (command: string) => Promise<void>
+  contextInfo: ContextInfo | undefined
+  fetchingContextInfo: boolean
 }
 
 export const ChatContext = createContext<ChatContextValue>(

@@ -5,6 +5,7 @@ import { Maybe } from 'graphql/jsutils/Maybe'
 
 import { ContextSource, ContextSourceKind } from '@/lib/gql/generates/graphql'
 import { AttachmentDocItem } from '@/lib/types'
+import { isAttachmentCommitDoc } from '@/lib/utils'
 import {
   Accordion,
   AccordionContent,
@@ -87,21 +88,23 @@ export function ReadingDocStepper({
         <AccordionContent className="pb-0">
           <div className="space-y-2 text-sm text-muted-foreground">
             <StepItem
-              title="Search for relevant web docs ..."
+              title="Collect documents ..."
               isLastItem
               isLoading={isReadingDocs}
+              defaultOpen={!!webResources?.length}
             >
               {!!webResources?.length && (
                 <div className="mb-3 mt-2">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     {webResources.map((x, index) => {
+                      const _key = isAttachmentCommitDoc(x) ? x.sha : x.link
                       return (
-                        <div key={`${x.link}_${index}`}>
+                        <div key={`${_key}_${index}`}>
                           <HoverCard openDelay={100} closeDelay={100}>
                             <HoverCardTrigger>
                               <div
                                 className="group cursor-pointer whitespace-nowrap rounded-md bg-muted px-1.5 py-0.5 font-semibold"
-                                onClick={() => window.open(x.link)}
+                                onClick={() => window.open(_key)}
                               >
                                 <DocItem doc={x} />
                               </div>
@@ -110,6 +113,9 @@ export function ReadingDocStepper({
                               <DocDetailView
                                 enableDeveloperMode={enableDeveloperMode}
                                 relevantDocument={x}
+                                onLinkClick={url => {
+                                  window.open(url)
+                                }}
                               />
                             </HoverCardContent>
                           </HoverCard>

@@ -2,8 +2,8 @@ use std::{path::Path, sync::Arc};
 
 use anyhow::anyhow;
 pub use attachment::{
-    Attachment, AttachmentClientCode, AttachmentCode, AttachmentCodeFileList, AttachmentDoc,
-    AttachmentIssueDoc, AttachmentPullDoc, AttachmentWebDoc,
+    Attachment, AttachmentClientCode, AttachmentCode, AttachmentCodeFileList, AttachmentCommitDoc,
+    AttachmentDoc, AttachmentIssueDoc, AttachmentPullDoc, AttachmentWebDoc,
 };
 use cache::Cache;
 use cached::TimedSizedCache;
@@ -47,6 +47,7 @@ mod refresh_tokens;
 mod repositories;
 mod server_setting;
 mod threads;
+mod user_chats;
 mod user_completions;
 mod user_events;
 mod user_groups;

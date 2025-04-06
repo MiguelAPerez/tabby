@@ -1,11 +1,8 @@
 'use client'
 
-import { MouseEventHandler, useContext, useMemo, useState } from 'react'
+import { useContext, useMemo, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import DOMPurify from 'dompurify'
-import he from 'he'
 import { compact, isEmpty } from 'lodash-es'
-import { marked } from 'marked'
 import { useForm } from 'react-hook-form'
 import Textarea from 'react-textarea-autosize'
 import * as z from 'zod'
@@ -14,12 +11,11 @@ import { MARKDOWN_CITATION_REGEX } from '@/lib/constants/regex'
 import {
   ContextSource,
   Maybe,
-  MessageAttachmentClientCode,
-  MessageAttachmentCode
+  MessageAttachmentClientCode
 } from '@/lib/gql/generates/graphql'
 import { makeFormErrorHandler } from '@/lib/tabby/gql'
 import {
-  AttachmentDocItem,
+  AttachmentCodeItem,
   Context,
   ExtendedCombinedError,
   RelevantCodeContext
@@ -28,10 +24,10 @@ import {
   buildCodeBrowserUrlForContext,
   cn,
   formatLineHashForCodeBrowser,
-  getContent,
   getMentionsFromText,
   getRangeFromAttachmentCode,
   getRangeTextFromAttachmentCode,
+  isAttachmentCommitDoc,
   isDocSourceContext
 } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -43,17 +39,8 @@ import {
   FormMessage
 } from '@/components/ui/form'
 import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger
-} from '@/components/ui/hover-card'
-import {
   IconBug,
-  IconCheckCircled,
-  IconCircleDot,
   IconEdit,
-  IconGitMerge,
-  IconGitPullRequest,
   IconLayers,
   IconPlus,
   IconRefresh,
@@ -62,24 +49,15 @@ import {
   IconTrash
 } from '@/components/ui/icons'
 import { Skeleton } from '@/components/ui/skeleton'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger
-} from '@/components/ui/tooltip'
 import { ChatContext } from '@/components/chat/chat-context'
 import { CopyButton } from '@/components/copy-button'
 import {
   ErrorMessageBlock,
   MessageMarkdown
 } from '@/components/message-markdown'
-import { DocDetailView } from '@/components/message-markdown/doc-detail-view'
-import { SiteFavicon } from '@/components/site-favicon'
-import { UserAvatar } from '@/components/user-avatar'
 
 import { ReadingCodeStepper } from './reading-code-step'
 import { ReadingDocStepper } from './reading-doc-step'
-import { SOURCE_CARD_STYLE } from './search'
 import { SearchContext } from './search-context'
 import { ConversationMessage } from './types'
 
@@ -148,7 +126,13 @@ export function AssistantMessageSection({
       .trim()
     const docCitations =
       answer.attachment?.doc
-        ?.map((doc, idx) => `[${idx + 1}] ${doc.link}`)
+        ?.map((doc, idx) => {
+          if (isAttachmentCommitDoc(doc)) {
+            return `[${idx + 1}] ${doc.sha}`
+          } else {
+            return `[${idx + 1}] ${doc.link}`
+          }
+        })
         .join('\n') ?? ''
     const docCitationLen = answer.attachment?.doc?.length ?? 0
     const codeCitations =
@@ -185,7 +169,7 @@ export function AssistantMessageSection({
           range: getRangeFromAttachmentCode(code),
           filepath: code.filepath || '',
           content: code.content,
-          git_url: clientCodeGitUrl
+          gitUrl: clientCodeGitUrl
         }
       }) ?? []
     )
@@ -199,7 +183,7 @@ export function AssistantMessageSection({
           range: getRangeFromAttachmentCode(code),
           filepath: code.filepath,
           content: code.content,
-          git_url: code.gitUrl,
+          gitUrl: code.gitUrl,
           commit: code.commit ?? undefined,
           extra: {
             scores: code?.extra?.scores
@@ -221,11 +205,9 @@ export function AssistantMessageSection({
     (messageAttachmentClientCode?.length || 0) +
     (message.attachment?.code?.length || 0)
 
-  const issuesAndPRs = useMemo(() => {
+  const codebaseDocs = useMemo(() => {
     return messageAttachmentDocs?.filter(
-      x =>
-        x.__typename === 'MessageAttachmentIssueDoc' ||
-        x.__typename === 'MessageAttachmentPullDoc'
+      x => x.__typename !== 'MessageAttachmentWebDoc'
     )
   }, [messageAttachmentDocs])
 
@@ -241,7 +223,7 @@ export function AssistantMessageSection({
     window.open(url, '_blank')
   }
 
-  const openCodeBrowserTab = (code: MessageAttachmentCode) => {
+  const openCodeBrowserTab = (code: AttachmentCodeItem) => {
     const range = getRangeFromAttachmentCode(code)
 
     if (!code.filepath) return
@@ -262,7 +244,7 @@ export function AssistantMessageSection({
     window.open(url.toString())
   }
 
-  const onCodeCitationClick = (code: MessageAttachmentCode) => {
+  const onCodeCitationClick = (code: AttachmentCodeItem) => {
     if (code.gitUrl) {
       openCodeBrowserTab(code)
     }
@@ -323,7 +305,8 @@ export function AssistantMessageSection({
                 codeSourceId={message.codeSourceId}
                 docQuery
                 docQueryResources={docSources}
-                webResources={issuesAndPRs}
+                docs={codebaseDocs}
+                codeFileList={message.attachment?.codeFileList}
                 readingCode={{
                   fileList: showFileListStep,
                   snippet: showCodeSnippetsStep
@@ -362,6 +345,9 @@ export function AssistantMessageSection({
               fetchingContextInfo={fetchingContextInfo}
               canWrapLongLines={!isLoading}
               supportsOnApplyInEditorV2={supportsOnApplyInEditorV2}
+              onLinkClick={url => {
+                window.open(url)
+              }}
             />
             {/* if isEditing, do not display error message block */}
             {message.error && <ErrorMessageBlock error={message.error} />}
@@ -453,149 +439,6 @@ export function AssistantMessageSection({
   )
 }
 
-function SourceCard({
-  conversationId,
-  source,
-  showMore,
-  showDevTooltip
-}: {
-  conversationId: string
-  source: AttachmentDocItem
-  showMore: boolean
-  showDevTooltip?: boolean
-  isDeletable?: boolean
-  onDelete?: () => void
-}) {
-  const { setDevPanelOpen, setConversationIdForDev } = useContext(SearchContext)
-  const [devTooltipOpen, setDevTooltipOpen] = useState(false)
-
-  const onOpenChange = (v: boolean) => {
-    if (!showDevTooltip) return
-    setDevTooltipOpen(v)
-  }
-
-  const onTootipClick: MouseEventHandler<HTMLDivElement> = e => {
-    e.stopPropagation()
-    setConversationIdForDev(conversationId)
-    setDevPanelOpen(true)
-  }
-
-  return (
-    <HoverCard openDelay={100} closeDelay={100}>
-      <Tooltip
-        open={devTooltipOpen}
-        onOpenChange={onOpenChange}
-        delayDuration={0}
-      >
-        <HoverCardTrigger asChild>
-          <TooltipTrigger asChild>
-            <div
-              className="relative flex cursor-pointer flex-col justify-between rounded-lg border bg-card p-3 hover:bg-card/60"
-              style={{
-                height: showMore
-                  ? `${SOURCE_CARD_STYLE.expand}rem`
-                  : `${SOURCE_CARD_STYLE.compress}rem`,
-                transition: 'all 0.25s ease-out'
-              }}
-              onClick={() => window.open(source.link)}
-            >
-              <SourceCardContent source={source} showMore={showMore} />
-            </div>
-          </TooltipTrigger>
-        </HoverCardTrigger>
-        <TooltipContent
-          align="start"
-          className="cursor-pointer p-2"
-          onClick={onTootipClick}
-        >
-          <p>Score: {source?.extra?.score ?? '-'}</p>
-        </TooltipContent>
-      </Tooltip>
-      <HoverCardContent className="w-96 bg-background text-sm text-foreground dark:border-muted-foreground/60">
-        <DocDetailView relevantDocument={source} />
-      </HoverCardContent>
-    </HoverCard>
-  )
-}
-
-function SourceCardContent({
-  source,
-  showMore
-}: {
-  source: AttachmentDocItem
-  showMore: boolean
-}) {
-  const { hostname } = new URL(source.link)
-
-  const isIssue = source.__typename === 'MessageAttachmentIssueDoc'
-  const isPR = source.__typename === 'MessageAttachmentPullDoc'
-  const author =
-    source.__typename === 'MessageAttachmentWebDoc' ? undefined : source.author
-
-  const showAvatar = (isIssue || isPR) && !!author
-
-  return (
-    <div className="flex flex-1 flex-col justify-between gap-y-1">
-      <div className="flex flex-col gap-y-0.5">
-        <p className="line-clamp-1 w-full overflow-hidden text-ellipsis break-all text-xs font-semibold">
-          {source.title}
-        </p>
-
-        {showAvatar && (
-          <div className="flex items-center gap-1 overflow-x-hidden">
-            <UserAvatar user={author} className="h-3.5 w-3.5 shrink-0" />
-            <p className="truncate text-xs font-medium text-muted-foreground">
-              {author?.name}
-            </p>
-          </div>
-        )}
-        {(!showAvatar || showMore) && (
-          <p
-            className={cn(
-              ' w-full overflow-hidden text-ellipsis break-all text-xs text-muted-foreground',
-              !showAvatar && showMore ? 'line-clamp-2' : 'line-clamp-1'
-            )}
-          >
-            {normalizedText(getContent(source))}
-          </p>
-        )}
-      </div>
-      <div className="flex items-center text-xs text-muted-foreground">
-        <div className="flex w-full flex-1 items-center justify-between gap-1">
-          <div className="flex items-center">
-            <SiteFavicon hostname={hostname} />
-            <p className="ml-1 truncate">
-              {hostname.replace('www.', '').split('/')[0]}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {isIssue && (
-              <>
-                {source.closed ? (
-                  <IconCheckCircled className="h-3.5 w-3.5" />
-                ) : (
-                  <IconCircleDot className="h-3.5 w-3.5" />
-                )}
-                <span>{source.closed ? 'Closed' : 'Open'}</span>
-              </>
-            )}
-            {isPR && (
-              <>
-                {source.merged ? (
-                  <IconGitMerge className="h-3.5 w-3.5" />
-                ) : (
-                  <IconGitPullRequest className="h-3.5 w-3.5" />
-                )}
-                {source.merged ? 'Merged' : 'Open'}
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function MessageContentForm({
   message,
   onCancel,
@@ -673,16 +516,4 @@ function MessageContentForm({
       </form>
     </Form>
   )
-}
-
-// Remove HTML and Markdown format
-const normalizedText = (input: string) => {
-  const sanitizedHtml = DOMPurify.sanitize(input, {
-    ALLOWED_TAGS: [],
-    ALLOWED_ATTR: []
-  })
-  const parsed = marked.parse(sanitizedHtml) as string
-  const decoded = he.decode(parsed)
-  const plainText = decoded.replace(/<\/?[^>]+(>|$)/g, '')
-  return plainText
 }

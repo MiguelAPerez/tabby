@@ -28,6 +28,7 @@ import { showOutputPanel } from "../logger";
 import { InlineEditController } from "../inline-edit";
 import { CommandPalette } from "./commandPalette";
 import { ConnectToServerWidget } from "./connectToServer";
+import { BranchQuickPick } from "./branchQuickPick";
 
 export class Commands {
   private chatEditCancellationTokenSource: CancellationTokenSource | null = null;
@@ -169,6 +170,21 @@ export class Commands {
       const commandPalette = new CommandPalette(this.client, this.config);
       commandPalette.show();
     },
+    toggleLanguageInlineCompletion: async (languageId?: string) => {
+      if (!languageId) {
+        languageId = window.activeTextEditor?.document.languageId;
+        if (!languageId) {
+          return;
+        }
+      }
+      const isLanguageDisabled = this.config.disabledLanguages.includes(languageId);
+      const disabledLanguages = this.config.disabledLanguages;
+      if (isLanguageDisabled) {
+        await this.config.updateDisabledLanguages(disabledLanguages.filter((lang) => lang !== languageId));
+      } else {
+        await this.config.updateDisabledLanguages([...disabledLanguages, languageId]);
+      }
+    },
     "outputPanel.focus": () => {
       showOutputPanel();
     },
@@ -263,6 +279,12 @@ export class Commands {
         this.chatSidePanelProvider.chatWebview.executeCommand("generate-tests");
       });
     },
+    "chat.codeReviewCodeBlock": async () => {
+      ensureHasEditorSelection(async () => {
+        await commands.executeCommand("tabby.chatView.focus");
+        this.chatSidePanelProvider.chatWebview.executeCommand("code-review");
+      });
+    },
     "chat.createPanel": async () => {
       await createChatPanel(this.context, this.client, this.gitProvider);
     },
@@ -346,8 +368,11 @@ export class Commands {
       };
       await this.client.chat.resolveEdit({ location, action: "discard" });
     },
-    "chat.generateCommitMessage": async (repository?: Repository) => {
-      let selectedRepo = repository;
+    "chat.generateCommitMessage": async (repository?: { rootUri?: Uri }) => {
+      let selectedRepo: Repository | undefined = undefined;
+      if (repository && repository.rootUri) {
+        selectedRepo = this.gitProvider.getRepository(repository.rootUri);
+      }
       if (!selectedRepo) {
         const repos = this.gitProvider.getRepositories() ?? [];
         if (repos.length < 1) {
@@ -400,11 +425,77 @@ export class Commands {
             { repository: selectedRepo.rootUri.toString() },
             token,
           );
+
           if (result && selectedRepo.inputBox) {
             selectedRepo.inputBox.value = result.commitMessage;
+
+            if (selectedRepo.state.HEAD) {
+              const currentBranch = selectedRepo.state.HEAD.name;
+              // FIXME(Sma1lboy): let LLM model decide should we create a new branch or not
+              if (currentBranch === "main" || currentBranch === "master") {
+                commands.executeCommand("tabby.chat.generateBranchName", selectedRepo);
+              }
+            }
           }
         },
       );
+    },
+    "chat.generateBranchName": async (repository?: { rootUri?: Uri }) => {
+      let selectedRepo: Repository | undefined = undefined;
+      if (repository && repository.rootUri) {
+        selectedRepo = this.gitProvider.getRepository(repository.rootUri);
+      }
+      if (!selectedRepo) {
+        const repos = this.gitProvider.getRepositories() ?? [];
+        if (repos.length < 1) {
+          window.showInformationMessage("No Git repositories found.");
+          return;
+        }
+        if (repos.length == 1) {
+          selectedRepo = repos[0];
+        } else {
+          const selected = await window.showQuickPick(
+            repos
+              .map((repo) => {
+                const repoRoot = repo.rootUri.fsPath;
+                return {
+                  label: path.basename(repoRoot),
+                  detail: repoRoot,
+                  iconPath: new ThemeIcon("repo"),
+                  picked: repo.ui.selected,
+                  alwaysShow: true,
+                  value: repo,
+                };
+              })
+              .sort((a, b) => {
+                if (a.detail.startsWith(b.detail)) {
+                  return 1;
+                } else if (b.detail.startsWith(a.detail)) {
+                  return -1;
+                } else {
+                  return a.label.localeCompare(b.label);
+                }
+              }),
+            { placeHolder: "Select a Git repository" },
+          );
+          selectedRepo = selected?.value;
+        }
+      }
+      if (!selectedRepo) {
+        return;
+      }
+
+      const branchQuickPick = new BranchQuickPick(this.client, selectedRepo.rootUri.toString());
+
+      const branchName = await branchQuickPick.start();
+      if (branchName) {
+        try {
+          await selectedRepo.createBranch(branchName, true);
+          window.showInformationMessage(`Created branch: ${branchName}`);
+        } catch (error) {
+          window.showErrorMessage(`Failed to create branch: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     },
   };
 }
