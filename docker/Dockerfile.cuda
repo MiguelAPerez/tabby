@@ -37,6 +37,9 @@ RUN mkdir -p target
 
 COPY . .
 
+# Supports RTX 3080 and newer GPUs
+ENV CUDA_ARCHITECTURES="86;89"
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/root/workspace/target \
     cargo build --no-default-features --features cuda,prod --release --package tabby && \
