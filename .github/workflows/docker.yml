@@ -19,7 +19,7 @@ concurrency:
 
 env:
   RUST_TOOLCHAIN: 1.82.0
-  CUDA_VERSION: 12.9.1
+  CUDA_VERSION: 13.0.0
 
 jobs:
   release-docker:
@@ -96,6 +96,8 @@ jobs:
           # list of Docker images to use as base name for tags
           images: |
             ghcr.io/${{ env.IMAGE_NAME }}
+
+            
           # generate Docker tags based on the following events/attributes
           tags: |
             type=raw,value={{branch}}-{{sha}},enable=${{ startsWith(github.ref, 'refs/heads') }}
